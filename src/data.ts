@@ -1,17 +1,12 @@
 import {
   AlertTriangle,
-  Archive,
   Bell,
-  Bot,
   Building2,
-  CalendarDays,
   ClipboardCheck,
-  DollarSign,
   FileText,
   FolderKanban,
   Hammer,
   Home,
-  KeyRound,
   Landmark,
   LayoutDashboard,
   MessageSquare,
@@ -86,6 +81,30 @@ export type MaintenanceRequest = {
   access: string;
 };
 
+export type BuildingDirectory = {
+  buildingId: string;
+  strataManager: string;
+  buildingManager: string;
+  concierge: string;
+  emergencyContact: string;
+  afterHoursContact: string;
+  companyPhone: string;
+  companyEmail: string;
+};
+
+export type ReportIssue = {
+  id: string;
+  title: string;
+  category: 'Maintenance' | 'Damage' | 'Security' | 'Noise' | 'Safety' | 'Other';
+  severity: Priority;
+  buildingId: string;
+  unit: string;
+  resident: string;
+  outcome: 'Maintenance request' | 'Incident' | 'Maintenance request + incident';
+  status: string;
+  submitted: string;
+};
+
 export type Contractor = {
   id: string;
   company: string;
@@ -141,26 +160,18 @@ export type PageId =
   | 'resident'
   | 'committee'
   | 'contractor'
-  | 'notices'
+  | 'communications'
+  | 'report_issue'
   | 'maintenance'
-  | 'work_orders'
   | 'projects'
   | 'incidents'
   | 'compliance'
   | 'documents'
-  | 'levies'
-  | 'renovations'
-  | 'meetings'
   | 'facilities'
-  | 'packages'
-  | 'messages'
-  | 'assets'
-  | 'inspections'
-  | 'notifications'
+  | 'directory'
   | 'settings'
   | 'users'
-  | 'audit'
-  | 'assistant';
+  | 'audit';
 
 export const roleLabels: Record<Role, string> = {
   super_admin: 'Platform Super Admin',
@@ -315,10 +326,29 @@ export const notices: Notice[] = [
   priority: (['Medium', 'High', 'Low', 'Low', 'Emergency'] as Priority[])[index % 5],
   audience: ['All residents', 'Owners only', 'Tenants only', 'Committee only', 'Level 7 residents'][index % 5],
   publishAt: `2026-06-${String(5 + index).padStart(2, '0')} 09:00`,
-  channels: ['in-app', 'email', index % 4 === 0 ? 'SMS' : 'push'],
+  channels: notificationChannels((['Medium', 'High', 'Low', 'Low', 'Emergency'] as Priority[])[index % 5]),
   reads: 42 + index * 7,
   body: 'Building managers have scheduled this update with clear access, noise and safety instructions for residents.'
 }));
+
+export const buildingDirectories: BuildingDirectory[] = buildings.map((building, index) => ({
+  buildingId: building.id,
+  strataManager: building.manager,
+  buildingManager: ['Marcus Lee', 'Elena Romano', 'Sarah McKenzie', 'Daniel Park'][index],
+  concierge: ['Harbourline concierge desk', 'Glebe Foundry caretaker', 'Bondi Pavilion front desk', 'Parramatta Quarter concierge'][index],
+  emergencyContact: '000 for life-threatening emergencies',
+  afterHoursContact: 'Northshore after-hours line: 1300 778 228',
+  companyPhone: '02 9055 0188',
+  companyEmail: 'support@northshorestrata.com.au'
+}));
+
+export const reportIssues: ReportIssue[] = [
+  { id: 'ri1', title: 'Water entering storage cage', category: 'Maintenance', severity: 'High', buildingId: 'b1', unit: '4A', resident: 'Sienna Nguyen', outcome: 'Maintenance request + incident', status: 'Triage', submitted: '2026-06-05' },
+  { id: 'ri2', title: 'Broken glass near lobby door', category: 'Damage', severity: 'High', buildingId: 'b1', unit: '7C', resident: 'Oliver Taylor', outcome: 'Incident', status: 'Manager review', submitted: '2026-06-05' },
+  { id: 'ri3', title: 'Repeated rooftop noise after 10pm', category: 'Noise', severity: 'Medium', buildingId: 'b2', unit: '11B', resident: 'Mia Singh', outcome: 'Incident', status: 'Open', submitted: '2026-06-04' },
+  { id: 'ri4', title: 'Garage gate remote not working', category: 'Security', severity: 'Medium', buildingId: 'b3', unit: '9D', resident: 'Thomas Wilson', outcome: 'Maintenance request', status: 'Assigned', submitted: '2026-06-03' },
+  { id: 'ri5', title: 'Trip hazard on fire stair landing', category: 'Safety', severity: 'Emergency', buildingId: 'b4', unit: '2A', resident: 'Ava Khan', outcome: 'Maintenance request + incident', status: 'Emergency response', submitted: '2026-06-05' }
+];
 
 export const projects: Project[] = [
   { id: 'p1', title: 'Balcony waterproofing remediation', buildingId: 'b3', budget: 680000, spend: 214000, contractorId: 'c5', progress: 38, status: 'In progress', risk: 'Weather delays', nextMilestone: 'Level 6 membrane inspection' },
@@ -441,9 +471,9 @@ export const inspections: SimpleRecord[] = [
 }));
 
 export const notifications: SimpleRecord[] = [
-  { id: 'nt1', title: 'Emergency alert issued', buildingId: 'b1', owner: 'System', status: 'Sent', priority: 'Emergency', due: '2026-06-05', meta: 'In-app, SMS, push placeholders' },
-  { id: 'nt2', title: 'Compliance deadline approaching', buildingId: 'b4', owner: 'System', status: 'Open', priority: 'High', due: '2026-06-07', meta: 'Manager escalation scheduled' },
-  { id: 'nt3', title: 'Committee vote required', buildingId: 'b3', owner: 'System', status: 'Sent', priority: 'Medium', due: '2026-06-08', meta: 'Resolution signature reminder' }
+  { id: 'nt1', title: 'Emergency alert issued', buildingId: 'b1', owner: 'System', status: 'Sent', priority: 'Emergency', due: '2026-06-05', meta: 'In-app + email' },
+  { id: 'nt2', title: 'Compliance deadline approaching', buildingId: 'b4', owner: 'System', status: 'Open', priority: 'High', due: '2026-06-07', meta: 'In-app + email + future push placeholder' },
+  { id: 'nt3', title: 'Committee vote required', buildingId: 'b3', owner: 'System', status: 'Sent', priority: 'Medium', due: '2026-06-08', meta: 'In-app + email' }
 ];
 
 export const auditLogs: SimpleRecord[] = [
@@ -462,25 +492,17 @@ export const navItems: NavItem[] = [
   { id: 'buildings', label: 'Buildings', icon: Building2, roles: ['super_admin', 'portfolio_admin', 'manager'] },
   { id: 'building', label: 'Building Detail', icon: Home, roles: ['portfolio_admin', 'manager'] },
   { id: 'resident', label: 'Resident', icon: Home, roles: ['resident', 'committee'] },
+  { id: 'communications', label: 'Communications', icon: MessageSquare, roles: ['portfolio_admin', 'manager', 'resident', 'committee'] },
+  { id: 'report_issue', label: 'Report Issue', icon: AlertTriangle, roles: ['resident', 'committee'] },
   { id: 'committee', label: 'Committee', icon: Vote, roles: ['committee', 'portfolio_admin', 'manager'] },
-  { id: 'contractor', label: 'Contractor', icon: Wrench, roles: ['contractor', 'manager'] },
-  { id: 'notices', label: 'Notices', icon: Bell, roles: ['portfolio_admin', 'manager', 'resident', 'committee'] },
-  { id: 'maintenance', label: 'Maintenance', icon: Hammer, roles: ['portfolio_admin', 'manager', 'resident', 'committee'] },
-  { id: 'work_orders', label: 'Work Orders', icon: ClipboardCheck, roles: ['manager', 'contractor', 'portfolio_admin'] },
-  { id: 'projects', label: 'Projects', icon: FolderKanban, roles: ['portfolio_admin', 'manager', 'resident', 'committee', 'contractor'] },
-  { id: 'incidents', label: 'Incidents', icon: AlertTriangle, roles: ['portfolio_admin', 'manager', 'resident', 'committee'] },
+  { id: 'maintenance', label: 'Maintenance', icon: Hammer, roles: ['portfolio_admin', 'manager'] },
+  { id: 'incidents', label: 'Incidents', icon: AlertTriangle, roles: ['portfolio_admin', 'manager'] },
+  { id: 'projects', label: 'Projects', icon: FolderKanban, roles: ['portfolio_admin', 'manager', 'resident', 'committee'] },
   { id: 'compliance', label: 'Compliance', icon: ShieldCheck, roles: ['portfolio_admin', 'manager'] },
-  { id: 'documents', label: 'Documents', icon: FileText, roles: ['portfolio_admin', 'manager', 'resident', 'committee', 'contractor'] },
-  { id: 'levies', label: 'Levies', icon: DollarSign, roles: ['portfolio_admin', 'manager', 'resident', 'committee'] },
-  { id: 'renovations', label: 'Renovations', icon: KeyRound, roles: ['portfolio_admin', 'manager', 'resident', 'committee'] },
-  { id: 'meetings', label: 'Meetings', icon: CalendarDays, roles: ['portfolio_admin', 'manager', 'resident', 'committee'] },
+  { id: 'documents', label: 'Documents', icon: FileText, roles: ['portfolio_admin', 'manager', 'resident', 'committee'] },
   { id: 'facilities', label: 'Facilities', icon: Landmark, roles: ['portfolio_admin', 'manager', 'resident', 'committee'] },
-  { id: 'packages', label: 'Packages', icon: PackageCheck, roles: ['manager', 'resident'] },
-  { id: 'messages', label: 'Messages', icon: MessageSquare, roles: ['portfolio_admin', 'manager', 'resident', 'committee', 'contractor'] },
-  { id: 'assets', label: 'Assets', icon: Archive, roles: ['portfolio_admin', 'manager'] },
-  { id: 'inspections', label: 'Inspections', icon: ClipboardCheck, roles: ['portfolio_admin', 'manager'] },
-  { id: 'notifications', label: 'Notifications', icon: Bell, roles: ['portfolio_admin', 'manager', 'resident', 'committee', 'contractor'] },
-  { id: 'assistant', label: 'AI Assistant', icon: Bot, roles: ['portfolio_admin', 'manager', 'resident', 'committee'] },
+  { id: 'directory', label: 'Building Directory', icon: ClipboardCheck, roles: ['portfolio_admin', 'manager', 'resident', 'committee'] },
+  { id: 'contractor', label: 'Contractors', icon: Wrench, roles: ['manager'] },
   { id: 'users', label: 'Users & Permissions', icon: Users, roles: ['super_admin', 'portfolio_admin', 'manager'] },
   { id: 'audit', label: 'Audit Logs', icon: ShieldCheck, roles: ['super_admin', 'portfolio_admin', 'manager'] }
 ];
@@ -491,8 +513,15 @@ export const company = {
   plan: 'Scale',
   mrr: 38400,
   usage: 78,
-  featureFlags: ['AI assistant beta', 'SMS placeholders', 'Committee e-signatures', 'Accounting integrations']
+  featureFlags: ['Committee e-signatures', 'Email notifications', 'Future push placeholder']
 };
+
+export function notificationChannels(priority: Priority) {
+  if (priority === 'Low') return ['in-app'];
+  if (priority === 'Medium') return ['in-app', 'email'];
+  if (priority === 'High') return ['in-app', 'email', 'future push'];
+  return ['in-app', 'email'];
+}
 
 export function buildingName(id: string) {
   return buildings.find((building) => building.id === id)?.name ?? 'Unknown building';

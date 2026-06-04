@@ -129,6 +129,24 @@ create table maintenance_requests (
   updated_at timestamptz not null default now()
 );
 
+create table report_issues (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references companies(id) on delete cascade,
+  building_id uuid not null references buildings(id) on delete cascade,
+  lot_id uuid references lots(id) on delete set null,
+  resident_id uuid references users(id) on delete set null,
+  category text not null check (category in ('Maintenance','Damage','Security','Noise','Safety','Other')),
+  severity strata_priority not null default 'Medium',
+  title text not null,
+  description text not null,
+  photos jsonb not null default '[]'::jsonb,
+  routing_outcome text not null default 'Maintenance request',
+  maintenance_request_id uuid references maintenance_requests(id) on delete set null,
+  incident_id uuid,
+  status text not null default 'Triage',
+  created_at timestamptz not null default now()
+);
+
 create table work_orders (
   id uuid primary key default gen_random_uuid(),
   company_id uuid not null references companies(id) on delete cascade,
@@ -211,6 +229,25 @@ create table incidents (
   linked_maintenance_request_id uuid references maintenance_requests(id) on delete set null,
   linked_documents jsonb not null default '[]'::jsonb,
   status text not null default 'Open'
+);
+
+alter table report_issues
+  add constraint report_issues_incident_id_fkey
+  foreign key (incident_id) references incidents(id) on delete set null;
+
+create table building_directories (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references companies(id) on delete cascade,
+  building_id uuid not null references buildings(id) on delete cascade,
+  strata_manager text not null,
+  building_manager text not null,
+  concierge_contact text,
+  emergency_contact text not null,
+  after_hours_contact text not null,
+  company_phone text not null,
+  company_email text not null,
+  updated_at timestamptz not null default now(),
+  unique (building_id)
 );
 
 create table compliance_items (
@@ -495,7 +532,7 @@ declare
   table_name text;
 begin
   foreach table_name in array array[
-    'notices','maintenance_requests','work_orders','quotes','projects','incidents','compliance_items',
+    'notices','maintenance_requests','report_issues','work_orders','quotes','projects','incidents','building_directories','compliance_items',
     'documents','levy_notices','levy_payments','renovation_requests','committee_motions','committee_votes',
     'meetings','facility_bookings','packages','messages','notifications','assets','inspections'
   ]
@@ -513,12 +550,14 @@ alter table building_memberships enable row level security;
 alter table contractors enable row level security;
 alter table notices enable row level security;
 alter table maintenance_requests enable row level security;
+alter table report_issues enable row level security;
 alter table work_orders enable row level security;
 alter table contractor_documents enable row level security;
 alter table quotes enable row level security;
 alter table projects enable row level security;
 alter table project_milestones enable row level security;
 alter table incidents enable row level security;
+alter table building_directories enable row level security;
 alter table compliance_items enable row level security;
 alter table documents enable row level security;
 alter table levy_notices enable row level security;
@@ -546,10 +585,12 @@ create policy tenant_audit_logs on audit_logs for select using (is_company_membe
 
 create policy building_notices on notices for all using (can_access_building(building_id));
 create policy building_maintenance on maintenance_requests for all using (can_access_building(building_id));
+create policy building_report_issues on report_issues for all using (can_access_building(building_id));
 create policy building_work_orders on work_orders for all using (can_access_building(building_id));
 create policy building_projects on projects for all using (can_access_building(building_id));
 create policy building_project_milestones on project_milestones for all using (is_company_member(company_id));
 create policy building_incidents on incidents for all using (can_access_building(building_id));
+create policy building_directories on building_directories for all using (can_access_building(building_id));
 create policy building_compliance on compliance_items for all using (can_access_building(building_id));
 create policy building_documents on documents for all using (building_id is null or can_access_building(building_id));
 create policy building_levy_notices on levy_notices for all using (can_access_building(building_id));
@@ -567,7 +608,7 @@ create policy company_quotes on quotes for all using (is_company_member(company_
 create policy company_levy_payments on levy_payments for all using (is_company_member(company_id));
 create policy company_votes on committee_votes for all using (is_company_member(company_id));
 
--- TODO: connect auth invites, email, SMS, push, payments, accounting exports and AI/RAG retrieval using service-role edge functions.
+-- TODO: connect auth invites, email delivery, future push, payments, accounting exports and AI/RAG retrieval using service-role edge functions.
 
 with inserted_company as (
   insert into companies (id, name, plan, subscription_status, monthly_recurring_revenue, feature_flags)
@@ -577,7 +618,7 @@ with inserted_company as (
     'Scale',
     'trial',
     38400,
-    '["AI assistant beta","SMS placeholders","Committee e-signatures","Accounting integrations"]'
+    '["Committee e-signatures","Email notifications","Future push placeholder"]'
   )
   returning id
 ),
@@ -660,8 +701,19 @@ select '00000000-0000-4000-8000-000000000001',
   (array['Medium','High','Low','Low','Emergency'])[1 + ((gs - 1) % 5)]::strata_priority,
   (array['all residents','owners only','tenants only','committee only','floor group'])[1 + ((gs - 1) % 5)],
   now() + (gs || ' days')::interval,
-  array['in-app','email','push']
+  case (array['Medium','High','Low','Low','Emergency'])[1 + ((gs - 1) % 5)]
+    when 'Low' then array['in-app']
+    when 'High' then array['in-app','email','future push']
+    else array['in-app','email']
+  end
 from generate_series(1, 12) gs;
+
+insert into building_directories (company_id, building_id, strata_manager, building_manager, concierge_contact, emergency_contact, after_hours_contact, company_phone, company_email)
+values
+  ('00000000-0000-4000-8000-000000000001','00000000-0000-4000-8000-000000000101','Amelia Hart','Marcus Lee','Harbourline concierge desk','000 for life-threatening emergencies','Northshore after-hours line: 1300 778 228','02 9055 0188','support@northshorestrata.com.au'),
+  ('00000000-0000-4000-8000-000000000001','00000000-0000-4000-8000-000000000102','Noah Haddad','Elena Romano','Glebe Foundry caretaker','000 for life-threatening emergencies','Northshore after-hours line: 1300 778 228','02 9055 0188','support@northshorestrata.com.au'),
+  ('00000000-0000-4000-8000-000000000001','00000000-0000-4000-8000-000000000103','Priya Menon','Sarah McKenzie','Bondi Pavilion front desk','000 for life-threatening emergencies','Northshore after-hours line: 1300 778 228','02 9055 0188','support@northshorestrata.com.au'),
+  ('00000000-0000-4000-8000-000000000001','00000000-0000-4000-8000-000000000104','Luca Romano','Daniel Park','Parramatta Quarter concierge','000 for life-threatening emergencies','Northshore after-hours line: 1300 778 228','02 9055 0188','support@northshorestrata.com.au');
 
 insert into maintenance_requests (company_id, building_id, lot_id, resident_id, category, priority, title, description, permission_to_access, preferred_access_times, status, sla_due_at)
 select
@@ -680,6 +732,26 @@ select
 from generate_series(1, 20) gs
 join lots on lots.lot_number = gs::text
 join users on users.email = 'resident' || gs::text || '@example.com';
+
+insert into report_issues (company_id, building_id, lot_id, resident_id, category, severity, title, description, routing_outcome, maintenance_request_id, status)
+select
+  mr.company_id,
+  mr.building_id,
+  mr.lot_id,
+  mr.resident_id,
+  (array['Maintenance','Damage','Security','Noise','Safety','Other'])[1 + ((row_number() over ()) - 1) % 6],
+  mr.priority,
+  mr.title,
+  mr.description,
+  case
+    when mr.priority = 'Emergency' then 'Maintenance request + incident'
+    when mr.category in ('Security','Noise') then 'Incident'
+    else 'Maintenance request'
+  end,
+  mr.id,
+  'Triage'
+from maintenance_requests mr
+limit 8;
 
 insert into work_orders (company_id, building_id, maintenance_request_id, contractor_id, status, scheduled_for)
 select company_id, building_id, id,

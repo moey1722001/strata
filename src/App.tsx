@@ -3,11 +3,9 @@ import {
   AlertTriangle,
   ArrowRight,
   Bell,
-  Bot,
   Building2,
   CalendarDays,
   CheckCircle2,
-  ChevronDown,
   Clock3,
   DollarSign,
   Download,
@@ -18,7 +16,6 @@ import {
   MessageSquare,
   Plus,
   Search,
-  Send,
   ShieldCheck,
   Sparkles,
   UserPlus,
@@ -27,7 +24,7 @@ import {
 } from 'lucide-react';
 import {
   auditLogs,
-  assets,
+  buildingDirectories,
   buildingName,
   buildings,
   committeeMembers,
@@ -39,23 +36,20 @@ import {
   facilityBookings,
   filterForRole,
   incidents,
-  inspections,
-  levies,
   maintenanceRequests,
-  meetings,
   messages,
   motions,
   navItems,
   notices,
+  notificationChannels,
   notifications,
-  packages,
   people,
   projects,
-  renovations,
+  reportIssues,
   roleLabels,
   staff
 } from './data';
-import type { MaintenanceRequest, Notice, PageId, Priority, Project, Role, SimpleRecord } from './data';
+import type { BuildingDirectory, MaintenanceRequest, Notice, PageId, Priority, Project, ReportIssue, Role, SimpleRecord } from './data';
 
 const priorityClasses: Record<Priority, string> = {
   Emergency: 'bg-red-50 text-red-700 ring-red-200',
@@ -153,7 +147,7 @@ function App() {
             </button>
             <div className="hidden flex-1 items-center gap-3 rounded-full border border-line bg-slate-50 px-4 py-2 text-sm text-slate-500 md:flex">
               <Search size={17} />
-              <span>Search notices, lots, work orders, documents...</span>
+              <span>Search buildings, contacts, notices, issues, documents...</span>
             </div>
             <select
               value={role}
@@ -238,7 +232,7 @@ function PublicSite({
                   <span className="pill bg-emerald-400/15 text-emerald-100 ring-emerald-300/20">Live demo data</span>
                 </div>
                 <div className="grid gap-3 p-5">
-                  {['Emergency incidents', 'Overdue maintenance', 'Committee votes', 'AFSS lodgements'].map((item, index) => (
+                  {['Critical alerts', 'Overdue issues', 'Committee votes', 'AFSS lodgements'].map((item, index) => (
                     <div className="rounded-2xl border border-white/10 bg-white/10 p-4" key={item}>
                       <div className="flex items-center justify-between">
                         <span className="text-sm text-slate-200">{item}</span>
@@ -254,7 +248,7 @@ function PublicSite({
             <div className="grid gap-4 md:grid-cols-3">
               {[
                 ['Portfolio clarity', 'See building profitability, risk, arrears, complaints and staff performance in one executive view.'],
-                ['Resident simplicity', 'Mobile-first notices, maintenance, bookings, packages, documents and project updates.'],
+                ['Resident simplicity', 'Mobile-first notices, issue reporting, bookings, building contacts and request tracking.'],
                 ['Governance ready', 'Committee voting, digital resolutions, audit trails, contractor compliance and meeting records.']
               ].map(([title, copy]) => (
                 <article className="rounded-3xl border border-line bg-white p-6 shadow-soft" key={title}>
@@ -340,11 +334,11 @@ function PageRouter({ page, role }: { page: PageId; role: Role }) {
   if (page === 'resident') return <ResidentDashboard role={role} />;
   if (page === 'committee') return <CommitteeDashboard role={role} />;
   if (page === 'contractor') return <ContractorDashboard role={role} />;
-  if (page === 'notices') return <NoticesPage role={role} />;
+  if (page === 'communications') return <CommunicationsHub role={role} />;
+  if (page === 'report_issue') return <ReportIssuePage role={role} />;
+  if (page === 'directory') return <BuildingDirectoryPage role={role} />;
   if (page === 'maintenance') return <MaintenancePage role={role} />;
-  if (page === 'work_orders') return <WorkOrdersPage role={role} />;
   if (page === 'projects') return <ProjectsPage role={role} />;
-  if (page === 'assistant') return <AssistantPage role={role} />;
 
   const moduleMap: Record<PageId, { title: string; eyebrow: string; records: SimpleRecord[]; cta: string }> = {
     public: { title: '', eyebrow: '', records: [], cta: '' },
@@ -354,26 +348,18 @@ function PageRouter({ page, role }: { page: PageId; role: Role }) {
     resident: { title: '', eyebrow: '', records: [], cta: '' },
     committee: { title: '', eyebrow: '', records: [], cta: '' },
     contractor: { title: '', eyebrow: '', records: [], cta: '' },
-    notices: { title: '', eyebrow: '', records: [], cta: '' },
+    communications: { title: '', eyebrow: '', records: [], cta: '' },
+    report_issue: { title: '', eyebrow: '', records: [], cta: '' },
     maintenance: { title: '', eyebrow: '', records: [], cta: '' },
-    work_orders: { title: '', eyebrow: '', records: [], cta: '' },
     projects: { title: '', eyebrow: '', records: [], cta: '' },
     incidents: { title: 'Incident Register', eyebrow: 'Insurance, WHS and complaints', records: incidents, cta: 'Record incident' },
     compliance: { title: 'Compliance Dashboard', eyebrow: 'AFSS, lifts, insurance, WHS and Strata Hub', records: complianceItems, cta: 'Add compliance item' },
     documents: { title: 'Documents Library', eyebrow: 'Permissions, versions, search and downloads', records: documents, cta: 'Upload document' },
-    levies: { title: 'Levy Tracking', eyebrow: 'Visibility now, accounting integrations later', records: levies, cta: 'Upload levy notice' },
-    renovations: { title: 'Renovation Approvals', eyebrow: 'Resident requests, plans, committee review and by-law acknowledgements', records: renovations, cta: 'New renovation request' },
-    meetings: { title: 'Meetings and AGMs', eyebrow: 'Agendas, motions, voting, minutes and reminders', records: meetings, cta: 'Create meeting' },
     facilities: { title: 'Facility Bookings', eyebrow: 'Rules, approvals, calendar and fee placeholders', records: facilityBookings, cta: 'Add booking' },
-    packages: { title: 'Package Deliveries', eyebrow: 'Concierge logging and resident collection updates', records: packages, cta: 'Log package' },
-    messages: { title: 'Messaging', eyebrow: 'Residents, committees, contractors and linked work contexts', records: messages, cta: 'New message' },
-    assets: { title: 'Asset Register', eyebrow: 'Lifts, fire panels, gates, CCTV, pools and common systems', records: assets, cta: 'Add asset' },
-    inspections: { title: 'Inspections', eyebrow: 'Checklists, photos, notes and maintenance conversion', records: inspections, cta: 'Schedule inspection' },
-    notifications: { title: 'Notifications', eyebrow: 'In-app now, email/SMS/push placeholders ready', records: notifications, cta: 'Create notification' },
+    directory: { title: '', eyebrow: '', records: [], cta: '' },
     settings: { title: 'Settings', eyebrow: 'Company, subscription, feature flags and integrations', records: company.featureFlags.map((flag, index) => ({ id: `ff${index}`, title: flag, buildingId: 'b1', owner: 'Platform', status: 'Enabled', meta: 'Feature flag' })), cta: 'Add feature flag' },
     users: { title: 'Users and Permissions', eyebrow: 'Company roles and building-level memberships', records: [...staff, ...committeeMembers.slice(0, 6)].map((person) => ({ id: person.id, title: person.name, buildingId: person.buildingId, owner: person.email, status: person.role, meta: person.unit })), cta: 'Invite user' },
-    audit: { title: 'Audit Logs', eyebrow: 'User, role, action, entity, old/new value and tenant context', records: auditLogs, cta: 'Export logs' },
-    assistant: { title: '', eyebrow: '', records: [], cta: '' }
+    audit: { title: 'Audit Logs', eyebrow: 'User, role, action, entity, old/new value and tenant context', records: auditLogs, cta: 'Export logs' }
   };
 
   const config = moduleMap[page];
@@ -470,14 +456,15 @@ function BuildingsPage({ role }: { role: Role }) {
 function BuildingDashboard({ role }: { role: Role }) {
   const building = role === 'manager' ? buildings[0] : buildings[3];
   const buildingMaintenance = maintenanceRequests.filter((request) => request.buildingId === building.id);
+  const directory = buildingDirectories.find((item) => item.buildingId === building.id) ?? buildingDirectories[0];
   return (
     <div className="space-y-6">
-      <SectionHeader eyebrow="Building dashboard" title={building.name} action={<button className="btn-primary"><Bell size={17} /> Create notice</button>} />
+      <SectionHeader eyebrow="Building dashboard" title={building.name} action={<button className="btn-primary"><Bell size={17} /> Create alert</button>} />
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <Metric title="Lots" value={building.lots.toString()} detail={building.address} icon={Building2} />
-        <Metric title="Open requests" value={buildingMaintenance.filter((item) => item.status !== 'Closed').length.toString()} detail="Maintenance and incidents" icon={AlertTriangle} tone="amber" />
+        <Metric title="Open issues" value={buildingMaintenance.filter((item) => item.status !== 'Closed').length.toString()} detail="Maintenance and incidents" icon={AlertTriangle} tone="amber" />
         <Metric title="Active projects" value={projects.filter((project) => project.buildingId === building.id).length.toString()} detail="Committee visible" icon={Vote} tone="blue" />
-        <Metric title="Levy arrears" value={currency(building.arrears)} detail="Owner visibility enabled" icon={DollarSign} tone="red" />
+        <Metric title="Compliance risk" value={complianceItems.filter((item) => item.buildingId === building.id && item.status === 'Overdue').length.toString()} detail="Overdue items" icon={ShieldCheck} tone="red" />
       </div>
       <div className="grid gap-5 xl:grid-cols-3">
         <Panel title="Building profile">
@@ -489,6 +476,7 @@ function BuildingDashboard({ role }: { role: Role }) {
             ['Documents', documents.filter((item) => item.buildingId === building.id).length.toString()]
           ]} />
         </Panel>
+        <DirectoryPanel directory={directory} />
         <Panel title="Upcoming and active" className="xl:col-span-2">
           <RecordTable records={[...filterForRole(notices, role).slice(0, 3).map(noticeToRecord), ...buildingMaintenance.slice(0, 3).map(maintenanceToRecord)]} />
         </Panel>
@@ -500,14 +488,15 @@ function BuildingDashboard({ role }: { role: Role }) {
 function ResidentDashboard({ role }: { role: Role }) {
   const feed = filterForRole(notices, role);
   const ownRequests = filterForRole(maintenanceRequests, role);
+  const directory = buildingDirectories[0];
   return (
     <div className="mx-auto max-w-5xl space-y-5">
-      <SectionHeader eyebrow="Resident home" title="Harbourline Residences" action={<button className="btn-primary"><Plus size={17} /> Submit request</button>} />
+      <SectionHeader eyebrow="Resident home" title="Harbourline Residences" action={<button className="btn-primary"><Plus size={17} /> Report issue</button>} />
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <Metric title="Packages" value={packages.filter((item) => item.buildingId === 'b1' && item.status === 'Awaiting collection').length.toString()} detail="Awaiting collection" icon={Download} />
-        <Metric title="Works" value={ownRequests.length.toString()} detail="Your building" icon={Clock3} tone="amber" />
-        <Metric title="Meetings" value="1" detail="Next AGM" icon={CalendarDays} tone="blue" />
-        <Metric title="Documents" value="Quick links" detail="By-laws, levies, minutes" icon={FileText} tone="green" />
+        <Metric title="Notices" value={feed.length.toString()} detail="Latest building updates" icon={Bell} />
+        <Metric title="Requests" value={ownRequests.length.toString()} detail="Track your issues" icon={Clock3} tone="amber" />
+        <Metric title="Bookings" value={facilityBookings.filter((item) => item.buildingId === 'b1').length.toString()} detail="Facilities" icon={CalendarDays} tone="blue" />
+        <Metric title="Documents" value="Quick links" detail="By-laws, minutes, reports" icon={FileText} tone="green" />
       </div>
       <div className="grid gap-5 lg:grid-cols-[1.1fr_0.9fr]">
         <Panel title="Building feed">
@@ -526,7 +515,7 @@ function ResidentDashboard({ role }: { role: Role }) {
         </Panel>
         <Panel title="Your quick actions">
           <div className="grid gap-3">
-            {['Book BBQ area', 'View levy notice', 'Message building manager', 'Submit incident report', 'Request renovation approval'].map((action) => (
+            {['See notices', 'Report an issue', 'View documents', 'Book facilities', 'Check building contacts', 'Track requests'].map((action) => (
               <button className="flex items-center justify-between rounded-2xl border border-line px-4 py-3 text-left hover:bg-slate-50" key={action}>
                 <span className="font-medium">{action}</span>
                 <ArrowRight size={17} />
@@ -534,6 +523,7 @@ function ResidentDashboard({ role }: { role: Role }) {
             ))}
           </div>
         </Panel>
+        <DirectoryPanel directory={directory} className="lg:col-span-2" />
       </div>
     </div>
   );
@@ -570,26 +560,82 @@ function ContractorDashboard({ role }: { role: Role }) {
   );
 }
 
-function NoticesPage({ role }: { role: Role }) {
-  const scoped = filterForRole(notices, role);
+function CommunicationsHub({ role }: { role: Role }) {
+  const [activeTab, setActiveTab] = useState<'Feed' | 'Notices' | 'Messages' | 'Alerts'>('Feed');
+  const scopedNotices = filterForRole(notices, role);
+  const scopedMessages = filterForRole(messages, role);
+  const scopedAlerts = filterForRole(notifications, role);
+  const tabs = ['Feed', 'Notices', 'Messages', 'Alerts'] as const;
+  const recordsByTab: Record<typeof activeTab, SimpleRecord[]> = {
+    Feed: scopedNotices.slice(0, 8).map(noticeToRecord),
+    Notices: scopedNotices.map(noticeToRecord),
+    Messages: scopedMessages,
+    Alerts: scopedAlerts
+  };
+
   return (
     <div className="space-y-6">
-      <SectionHeader eyebrow="Resident feed and notices" title="Targeted building communications" action={<button className="btn-primary"><Plus size={17} /> Create notice</button>} />
-      <div className="grid gap-4 lg:grid-cols-3">
-        {scoped.map((notice) => (
-          <article className="rounded-3xl border border-line bg-white p-5 shadow-soft" key={notice.id}>
-            <div className="flex items-center justify-between gap-3">
-              <Badge label={notice.priority} tone={notice.priority} />
-              <span className="text-xs text-slate-500">{notice.reads} reads</span>
+      <SectionHeader eyebrow="Communications Hub" title="Feed, notices, messages and alerts" action={<button className="btn-primary"><Plus size={17} /> New communication</button>} />
+      <Panel title="Communication centre" action={<NotificationRules />}>
+        <div className="mb-5 flex flex-wrap gap-2">
+          {tabs.map((tabName) => (
+            <button key={tabName} className={`tab-button ${activeTab === tabName ? 'tab-button-active' : ''}`} onClick={() => setActiveTab(tabName)}>
+              {tabName}
+            </button>
+          ))}
+        </div>
+        {activeTab === 'Feed' ? (
+          <div className="grid gap-4 lg:grid-cols-2">
+            {scopedNotices.slice(0, 6).map((notice) => <NoticeCard notice={notice} key={notice.id} />)}
+          </div>
+        ) : (
+          <RecordTable records={recordsByTab[activeTab]} />
+        )}
+      </Panel>
+    </div>
+  );
+}
+
+function ReportIssuePage({ role }: { role: Role }) {
+  const scopedIssues = filterForRole(reportIssues, role);
+  const categories = ['Maintenance', 'Damage', 'Security', 'Noise', 'Safety', 'Other'];
+
+  return (
+    <div className="mx-auto max-w-5xl space-y-6">
+      <SectionHeader eyebrow="Report Issue" title="One simple flow for residents" action={<button className="btn-primary"><Plus size={17} /> Start report</button>} />
+      <div className="grid gap-5 lg:grid-cols-[0.8fr_1.2fr]">
+        <Panel title="New issue">
+          <div className="grid gap-4">
+            <label>
+              <span className="text-sm font-medium text-slate-600">Category</span>
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                {categories.map((category) => <button className="rounded-2xl border border-line px-3 py-3 text-sm font-semibold hover:bg-slate-50" key={category}>{category}</button>)}
+              </div>
+            </label>
+            <label>
+              <span className="text-sm font-medium text-slate-600">What happened?</span>
+              <textarea className="mt-2 min-h-28 w-full rounded-2xl border border-line px-4 py-3 outline-none focus:border-harbour" placeholder="Describe the issue, location and urgency" />
+            </label>
+            <div className="rounded-2xl bg-slate-50 p-4 text-sm leading-6 text-slate-600">
+              The system routes each report into maintenance, incidents, or both based on category and severity.
             </div>
-            <h2 className="mt-4 text-lg font-semibold">{notice.title}</h2>
-            <p className="mt-2 text-sm text-slate-500">{buildingName(notice.buildingId)} · {notice.audience}</p>
-            <p className="mt-4 text-sm leading-6 text-slate-600">{notice.body}</p>
-            <div className="mt-4 flex flex-wrap gap-2">
-              {notice.channels.map((channel) => <span className="chip" key={channel}>{channel}</span>)}
-            </div>
-          </article>
-        ))}
+          </div>
+        </Panel>
+        <Panel title="Your tracked issues">
+          <ReportIssueList issues={scopedIssues} />
+        </Panel>
+      </div>
+    </div>
+  );
+}
+
+function BuildingDirectoryPage({ role }: { role: Role }) {
+  const directories = filterForRole(buildingDirectories, role);
+  return (
+    <div className="space-y-6">
+      <SectionHeader eyebrow="Building Directory" title="Contacts residents need quickly" action={<button className="btn-primary"><Plus size={17} /> Update contacts</button>} />
+      <div className="grid gap-5 lg:grid-cols-2">
+        {directories.map((directory) => <DirectoryPanel directory={directory} key={directory.buildingId} />)}
       </div>
     </div>
   );
@@ -598,9 +644,70 @@ function NoticesPage({ role }: { role: Role }) {
 function MaintenancePage({ role }: { role: Role }) {
   return (
     <div className="space-y-6">
-      <SectionHeader eyebrow="Maintenance requests" title="Triage, quotes, work orders and SLA timers" action={<button className="btn-primary"><Plus size={17} /> New request</button>} />
+      <SectionHeader eyebrow="Maintenance" title="Internal triage, contractors and SLA timers" action={<button className="btn-primary"><Plus size={17} /> New internal job</button>} />
       <MaintenanceCards requests={filterForRole(maintenanceRequests, role)} />
     </div>
+  );
+}
+
+function NoticeCard({ notice }: { notice: Notice }) {
+  return (
+    <article className="rounded-3xl border border-line bg-white p-5">
+      <div className="flex items-center justify-between gap-3">
+        <Badge label={notice.priority} tone={notice.priority} />
+        <span className="text-xs text-slate-500">{notice.reads} reads</span>
+      </div>
+      <h2 className="mt-4 text-lg font-semibold">{notice.title}</h2>
+      <p className="mt-2 text-sm text-slate-500">{buildingName(notice.buildingId)} · {notice.audience}</p>
+      <p className="mt-4 text-sm leading-6 text-slate-600">{notice.body}</p>
+      <div className="mt-4 flex flex-wrap gap-2">
+        {notice.channels.map((channel) => <span className="chip" key={channel}>{channel}</span>)}
+      </div>
+    </article>
+  );
+}
+
+function NotificationRules() {
+  return (
+    <div className="hidden gap-2 xl:flex">
+      {(['Low', 'Medium', 'High', 'Emergency'] as Priority[]).map((priority) => (
+        <span className="chip" key={priority}>{priority}: {notificationChannels(priority).join(' + ')}</span>
+      ))}
+    </div>
+  );
+}
+
+function ReportIssueList({ issues }: { issues: ReportIssue[] }) {
+  return (
+    <div className="space-y-3">
+      {issues.map((issue) => (
+        <article className="rounded-2xl border border-line p-4" key={issue.id}>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <Badge label={issue.severity} tone={issue.severity} />
+            <Badge label={issue.status} />
+          </div>
+          <h3 className="mt-3 font-semibold">{issue.title}</h3>
+          <p className="mt-1 text-sm text-slate-500">{issue.category} · Lot {issue.unit} · {issue.submitted}</p>
+          <p className="mt-3 text-sm text-slate-600">Creates: {issue.outcome}</p>
+        </article>
+      ))}
+    </div>
+  );
+}
+
+function DirectoryPanel({ directory, className = '' }: { directory: BuildingDirectory; className?: string }) {
+  return (
+    <Panel title={`${buildingName(directory.buildingId)} contacts`} className={className}>
+      <DetailRows rows={[
+        ['Strata manager', directory.strataManager],
+        ['Building manager', directory.buildingManager],
+        ['Concierge', directory.concierge],
+        ['Emergency', directory.emergencyContact],
+        ['After hours', directory.afterHoursContact],
+        ['Company phone', directory.companyPhone],
+        ['Company email', directory.companyEmail]
+      ]} />
+    </Panel>
   );
 }
 
@@ -645,49 +752,6 @@ function ProjectsPage({ role }: { role: Role }) {
   );
 }
 
-function AssistantPage({ role }: { role: Role }) {
-  const [message, setMessage] = useState('When is the next AGM?');
-  const scopedMeetings = filterForRole(meetings, role);
-  const response = message.toLowerCase().includes('agm')
-    ? `The next AGM is ${scopedMeetings[0]?.due ?? 'not scheduled yet'} for ${buildingName(scopedMeetings[0]?.buildingId ?? 'b1')}.`
-    : message.toLowerCase().includes('bbq')
-      ? 'The BBQ area can be booked from the Facilities page. Manager approval and deposit placeholders are enabled.'
-      : message.toLowerCase().includes('lift')
-        ? 'Lift repair updates are pulled from notices, maintenance requests and projects in the future RAG integration.'
-        : 'I can answer from notices, documents, projects, meetings, maintenance updates and facility rules once the AI/RAG layer is connected.';
-
-  return (
-    <div className="mx-auto max-w-5xl space-y-6">
-      <SectionHeader eyebrow="AI assistant placeholder" title="Resident and manager knowledge assistant" action={<span className="pill bg-blue-50 text-blue-700 ring-blue-200">Future RAG integration</span>} />
-      <div className="grid gap-5 lg:grid-cols-[0.8fr_1.2fr]">
-        <Panel title="Suggested questions">
-          <div className="grid gap-2">
-            {['When is the next AGM?', 'Can I book the BBQ area?', 'What is happening with the lift repair?', 'Where are the by-laws?', 'When is the water shutdown?'].map((question) => (
-              <button className="rounded-2xl border border-line px-4 py-3 text-left text-sm hover:bg-slate-50" key={question} onClick={() => setMessage(question)}>
-                {question}
-              </button>
-            ))}
-          </div>
-        </Panel>
-        <Panel title="Chat">
-          <div className="min-h-80 rounded-3xl bg-slate-50 p-4">
-            <div className="ml-auto max-w-[80%] rounded-3xl bg-ink px-4 py-3 text-sm text-white">{message}</div>
-            <div className="mt-4 flex max-w-[86%] gap-3">
-              <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-white text-harbour shadow-sm"><Bot size={18} /></span>
-              <div className="rounded-3xl border border-line bg-white px-4 py-3 text-sm leading-6 text-slate-700">{response}</div>
-            </div>
-          </div>
-          <div className="mt-4 flex gap-2">
-            <input className="flex-1 rounded-2xl border border-line px-4 py-3 outline-none focus:border-harbour" value={message} onChange={(event) => setMessage(event.target.value)} />
-            <button className="icon-button bg-ink text-white" aria-label="Send message"><Send size={18} /></button>
-          </div>
-          <p className="mt-3 text-xs text-slate-500">TODO: connect Supabase pgvector/OpenAI retrieval over notices, documents, projects, meetings, maintenance and facility rules.</p>
-        </Panel>
-      </div>
-    </div>
-  );
-}
-
 function ModulePage({ title, eyebrow, records, cta, compact = false }: { title: string; eyebrow: string; records: SimpleRecord[]; cta: string; compact?: boolean }) {
   return (
     <div className={compact ? 'space-y-4' : 'space-y-6'}>
@@ -695,7 +759,6 @@ function ModulePage({ title, eyebrow, records, cta, compact = false }: { title: 
       <Panel title={compact ? title : 'Records'} action={!compact ? <button className="btn-secondary"><Download size={16} /> Export</button> : undefined}>
         {records.length ? <RecordTable records={records} /> : <EmptyState title="Nothing needs attention" copy="New activity will appear here once residents, managers or contractors create records." />}
       </Panel>
-      {!compact && title === 'Notifications' && <p className="text-xs text-slate-500">TODO: wire email, SMS and push providers after in-app notification events are finalised.</p>}
       {!compact && title === 'Levy Tracking' && <p className="text-xs text-slate-500">TODO: connect accounting, payment and bank reconciliation integrations when processing is enabled.</p>}
     </div>
   );

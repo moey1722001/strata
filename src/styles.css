@@ -151,6 +151,28 @@ button {
   font-weight: 650;
 }
 
+.tab-button {
+  min-height: 2.5rem;
+  border-radius: 999px;
+  border: 1px solid #e6ebf1;
+  background: #fff;
+  padding: 0.55rem 0.95rem;
+  color: #516173;
+  font-size: 0.875rem;
+  font-weight: 700;
+}
+
+.tab-button:hover {
+  background: #f5f7fa;
+  color: #071426;
+}
+
+.tab-button-active {
+  border-color: #071426;
+  background: #071426;
+  color: #fff;
+}
+
 .hero {
   background:
     linear-gradient(115deg, rgba(7, 20, 38, 0.96), rgba(12, 31, 53, 0.88)),
