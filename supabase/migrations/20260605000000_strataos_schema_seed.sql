@@ -608,7 +608,7 @@ create policy company_quotes on quotes for all using (is_company_member(company_
 create policy company_levy_payments on levy_payments for all using (is_company_member(company_id));
 create policy company_votes on committee_votes for all using (is_company_member(company_id));
 
--- TODO: connect auth invites, email delivery, future push, payments, accounting exports and AI/RAG retrieval using service-role edge functions.
+-- Future integrations: auth invites, email delivery, SMS, push, payments, accounting exports and AI/RAG retrieval via service-role edge functions.
 
 with inserted_company as (
   insert into companies (id, name, plan, subscription_status, monthly_recurring_revenue, feature_flags)
@@ -618,7 +618,7 @@ with inserted_company as (
     'Scale',
     'trial',
     38400,
-    '["Committee e-signatures","Email notifications","Future push placeholder"]'
+    '["Committee e-signatures","Email notifications","Accounting integration placeholder"]'
   )
   returning id
 ),
@@ -703,7 +703,7 @@ select '00000000-0000-4000-8000-000000000001',
   now() + (gs || ' days')::interval,
   case (array['Medium','High','Low','Low','Emergency'])[1 + ((gs - 1) % 5)]
     when 'Low' then array['in-app']
-    when 'High' then array['in-app','email','future push']
+    when 'High' then array['in-app']
     else array['in-app','email']
   end
 from generate_series(1, 12) gs;

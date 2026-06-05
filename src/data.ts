@@ -3,6 +3,7 @@ import {
   Bell,
   Building2,
   ClipboardCheck,
+  DollarSign,
   FileText,
   FolderKanban,
   Hammer,
@@ -25,6 +26,15 @@ export type Role =
   | 'resident'
   | 'committee'
   | 'contractor';
+
+export type TestAccount = {
+  id: string;
+  name: string;
+  email: string;
+  role: Role;
+  title: string;
+  buildingId?: string;
+};
 
 export type Priority = 'Emergency' | 'High' | 'Medium' | 'Low';
 export type Status = 'Open' | 'Due soon' | 'Overdue' | 'Draft' | 'Approved' | 'Closed' | 'In progress' | 'Scheduled' | 'Submitted';
@@ -105,6 +115,21 @@ export type ReportIssue = {
   submitted: string;
 };
 
+export type LevyRecord = {
+  id: string;
+  buildingId: string;
+  lot: string;
+  owner: string;
+  currentBalance: number;
+  outstandingAmount: number;
+  nextDueDate: string;
+  latestNotice: string;
+  lastPaymentDate: string;
+  lastPaymentAmount: number;
+  reminderStatus: 'Not required' | 'Scheduled' | 'Sent' | 'Escalated';
+  status: 'Current' | 'Overdue' | 'Paid';
+};
+
 export type Contractor = {
   id: string;
   company: string;
@@ -168,6 +193,12 @@ export type PageId =
   | 'compliance'
   | 'documents'
   | 'facilities'
+  | 'renovations'
+  | 'packages'
+  | 'my_levies'
+  | 'levy_management'
+  | 'my_requests'
+  | 'messages'
   | 'directory'
   | 'settings'
   | 'users'
@@ -175,12 +206,21 @@ export type PageId =
 
 export const roleLabels: Record<Role, string> = {
   super_admin: 'Platform Super Admin',
-  portfolio_admin: 'Portfolio Admin',
+  portfolio_admin: 'Company Owner',
   manager: 'Strata Manager',
   resident: 'Resident',
   committee: 'Committee Member',
   contractor: 'Contractor'
 };
+
+export const testAccounts: TestAccount[] = [
+  { id: 'ta1', name: 'Clara Bennett', email: 'super@strataos.test', role: 'super_admin', title: 'Platform Operations Lead' },
+  { id: 'ta2', name: 'Amelia Hart', email: 'owner@northshorestrata.com.au', role: 'portfolio_admin', title: 'Company Owner' },
+  { id: 'ta3', name: 'Noah Haddad', email: 'manager@northshorestrata.com.au', role: 'manager', title: 'Strata Manager', buildingId: 'b1' },
+  { id: 'ta4', name: 'Sienna Nguyen', email: 'resident@example.com', role: 'resident', title: 'Owner occupier', buildingId: 'b1' },
+  { id: 'ta5', name: 'Oliver Taylor', email: 'committee@example.com', role: 'committee', title: 'Committee Secretary', buildingId: 'b1' },
+  { id: 'ta6', name: 'Harvey Price', email: 'contractor@liftcare.com.au', role: 'contractor', title: 'LiftCare NSW Contractor', buildingId: 'b1' }
+];
 
 export const buildings: Building[] = [
   {
@@ -393,15 +433,19 @@ export const documents: SimpleRecord[] = [
   meta: ['Levies', 'Financial reports', 'Insurance', 'Meetings', 'By-laws'][index % 5]
 }));
 
-export const levies: SimpleRecord[] = people.slice(0, 12).map((person, index) => ({
+export const levies: LevyRecord[] = people.slice(0, 16).map((person, index) => ({
   id: `l${index + 1}`,
-  title: `Q3 levy notice - Lot ${person.unit}`,
   buildingId: person.buildingId,
+  lot: person.unit,
   owner: person.name,
-  status: index % 4 === 0 ? 'Overdue' : index % 3 === 0 ? 'Paid' : 'Open',
-  due: `2026-07-${String(1 + index).padStart(2, '0')}`,
-  amount: 980 + index * 85,
-  meta: 'Accounting integration placeholder'
+  currentBalance: index === 0 ? 1420 : 680 + index * 115,
+  outstandingAmount: index % 3 === 0 ? 680 + index * 90 : 0,
+  nextDueDate: `2026-07-${String(1 + (index % 12)).padStart(2, '0')}`,
+  latestNotice: `levy-notice-${person.unit.toLowerCase()}-q3-2026.pdf`,
+  lastPaymentDate: `2026-05-${String(4 + (index % 18)).padStart(2, '0')}`,
+  lastPaymentAmount: 820 + index * 40,
+  reminderStatus: index % 6 === 0 ? 'Escalated' : index % 3 === 0 ? 'Sent' : index % 2 === 0 ? 'Scheduled' : 'Not required',
+  status: index % 3 === 0 ? 'Overdue' : index % 4 === 0 ? 'Paid' : 'Current'
 }));
 
 export const renovations: SimpleRecord[] = [
@@ -472,7 +516,7 @@ export const inspections: SimpleRecord[] = [
 
 export const notifications: SimpleRecord[] = [
   { id: 'nt1', title: 'Emergency alert issued', buildingId: 'b1', owner: 'System', status: 'Sent', priority: 'Emergency', due: '2026-06-05', meta: 'In-app + email' },
-  { id: 'nt2', title: 'Compliance deadline approaching', buildingId: 'b4', owner: 'System', status: 'Open', priority: 'High', due: '2026-06-07', meta: 'In-app + email + future push placeholder' },
+  { id: 'nt2', title: 'Compliance deadline approaching', buildingId: 'b4', owner: 'System', status: 'Open', priority: 'High', due: '2026-06-07', meta: 'In-app notification' },
   { id: 'nt3', title: 'Committee vote required', buildingId: 'b3', owner: 'System', status: 'Sent', priority: 'Medium', due: '2026-06-08', meta: 'In-app + email' }
 ];
 
@@ -491,18 +535,24 @@ export const navItems: NavItem[] = [
   { id: 'portfolio', label: 'Portfolio', icon: LayoutDashboard, roles: ['super_admin', 'portfolio_admin', 'manager'] },
   { id: 'buildings', label: 'Buildings', icon: Building2, roles: ['super_admin', 'portfolio_admin', 'manager'] },
   { id: 'building', label: 'Building Detail', icon: Home, roles: ['portfolio_admin', 'manager'] },
-  { id: 'resident', label: 'Resident', icon: Home, roles: ['resident', 'committee'] },
+  { id: 'resident', label: 'Dashboard', icon: Home, roles: ['resident'] },
   { id: 'communications', label: 'Communications', icon: MessageSquare, roles: ['portfolio_admin', 'manager', 'resident', 'committee'] },
   { id: 'report_issue', label: 'Report Issue', icon: AlertTriangle, roles: ['resident', 'committee'] },
+  { id: 'projects', label: 'Projects', icon: FolderKanban, roles: ['portfolio_admin', 'manager', 'resident', 'committee'] },
+  { id: 'documents', label: 'Documents', icon: FileText, roles: ['portfolio_admin', 'manager', 'resident', 'committee'] },
+  { id: 'facilities', label: 'Facility Bookings', icon: Landmark, roles: ['portfolio_admin', 'manager', 'resident', 'committee'] },
+  { id: 'renovations', label: 'Renovations', icon: ClipboardCheck, roles: ['manager', 'resident', 'committee'] },
+  { id: 'packages', label: 'Packages', icon: PackageCheck, roles: ['resident'] },
+  { id: 'my_levies', label: 'My Levies', icon: DollarSign, roles: ['resident', 'committee'] },
+  { id: 'my_requests', label: 'My Requests', icon: ClipboardCheck, roles: ['resident'] },
+  { id: 'directory', label: 'Building Directory', icon: ClipboardCheck, roles: ['portfolio_admin', 'manager', 'resident', 'committee'] },
+  { id: 'messages', label: 'Messages', icon: MessageSquare, roles: ['resident', 'committee'] },
   { id: 'committee', label: 'Committee', icon: Vote, roles: ['committee', 'portfolio_admin', 'manager'] },
   { id: 'maintenance', label: 'Maintenance', icon: Hammer, roles: ['portfolio_admin', 'manager'] },
   { id: 'incidents', label: 'Incidents', icon: AlertTriangle, roles: ['portfolio_admin', 'manager'] },
-  { id: 'projects', label: 'Projects', icon: FolderKanban, roles: ['portfolio_admin', 'manager', 'resident', 'committee'] },
   { id: 'compliance', label: 'Compliance', icon: ShieldCheck, roles: ['portfolio_admin', 'manager'] },
-  { id: 'documents', label: 'Documents', icon: FileText, roles: ['portfolio_admin', 'manager', 'resident', 'committee'] },
-  { id: 'facilities', label: 'Facilities', icon: Landmark, roles: ['portfolio_admin', 'manager', 'resident', 'committee'] },
-  { id: 'directory', label: 'Building Directory', icon: ClipboardCheck, roles: ['portfolio_admin', 'manager', 'resident', 'committee'] },
-  { id: 'contractor', label: 'Contractors', icon: Wrench, roles: ['manager'] },
+  { id: 'levy_management', label: 'Levy Management', icon: DollarSign, roles: ['portfolio_admin', 'manager'] },
+  { id: 'contractor', label: 'Contractor Jobs', icon: Wrench, roles: ['manager', 'contractor'] },
   { id: 'users', label: 'Users & Permissions', icon: Users, roles: ['super_admin', 'portfolio_admin', 'manager'] },
   { id: 'audit', label: 'Audit Logs', icon: ShieldCheck, roles: ['super_admin', 'portfolio_admin', 'manager'] }
 ];
@@ -513,14 +563,14 @@ export const company = {
   plan: 'Scale',
   mrr: 38400,
   usage: 78,
-  featureFlags: ['Committee e-signatures', 'Email notifications', 'Future push placeholder']
+  featureFlags: ['Committee e-signatures', 'Email notifications', 'Accounting integration placeholder']
 };
 
 export function notificationChannels(priority: Priority) {
   if (priority === 'Low') return ['in-app'];
-  if (priority === 'Medium') return ['in-app', 'email'];
-  if (priority === 'High') return ['in-app', 'email', 'future push'];
-  return ['in-app', 'email'];
+  if (priority === 'Medium') return ['in-app'];
+  if (priority === 'High') return ['in-app'];
+  return ['in-app'];
 }
 
 export function buildingName(id: string) {
