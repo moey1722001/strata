@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { ReactNode } from 'react';
+import type { FormEvent, ReactNode } from 'react';
 import type { ComponentProps, ElementType } from 'react';
 import {
   AlertTriangle,
@@ -27,9 +27,9 @@ import {
 } from 'lucide-react';
 import {
   auditLogs,
-  buildingDirectories,
   buildingName,
   buildings,
+  getBuildingConfig,
   committeeMembers,
   company,
   complianceItems,
@@ -60,16 +60,22 @@ import {
   staff,
   testAccounts
 } from './data';
-import type { BuildingDirectory, LevyRecord, MaintenanceRequest, Notice, PageId, Priority, Project, ReportIssue, Role, SimpleRecord, TestAccount } from './data';
+import type { BuildingConfiguration, BuildingContact, LevyRecord, MaintenanceRequest, Notice, PageId, Priority, Project, ReportIssue, Role, SimpleRecord, TestAccount } from './data';
 import { AtlasLogo, AtlasMark } from './brand';
 import {
   addContractorUpdate,
   assignContractorToFirstJob,
+  bookFacility,
   createNotice,
   createResidentIssue,
   loadMvpData,
   sendResidentMessage,
   signInTestAccount,
+  submitRenovation,
+  updateFacilityBooking,
+  updateMaintenanceRequestStatus,
+  updateReportIssueStatus,
+  updateRenovationStatus,
   uploadDocument,
   voteOnMotion
 } from './lib/mvpRepository';
@@ -101,22 +107,45 @@ const statusClasses: Record<string, string> = {
 };
 
 type FlowActions = {
-  reportIssue: (payload?: Partial<ReportIssue>) => Promise<void>;
-  assignContractor: (id?: string) => Promise<void>;
-  updateMaintenanceStatus: (id: string, status: string) => Promise<void>;
+  openForm: (kind: FormKind, context?: FormContext) => void;
+  reportIssue: (payload?: Partial<ReportIssue> & { description?: string }) => Promise<void>;
+  assignContractor: (id?: string, payload?: Partial<MaintenanceRequest>) => Promise<void>;
+  updateMaintenanceStatus: (id: string, status: string, note?: string) => Promise<void>;
   updateIssueStatus: (id: string, status: string) => Promise<void>;
   notifyResident: (id: string) => Promise<void>;
-  contractorUpdate: (id?: string, status?: string) => Promise<void>;
-  createNotice: () => Promise<void>;
-  sendMessage: () => Promise<void>;
-  uploadDocument: () => Promise<void>;
-  vote: () => Promise<void>;
-  bookFacility: () => Promise<void>;
-  submitRenovation: () => Promise<void>;
+  contractorUpdate: (id?: string, status?: string, note?: string) => Promise<void>;
+  createNotice: (payload?: Partial<Notice>) => Promise<void>;
+  sendMessage: (payload?: Partial<SimpleRecord>) => Promise<void>;
+  uploadDocument: (payload?: Partial<SimpleRecord>) => Promise<void>;
+  vote: (payload?: Partial<SimpleRecord>) => Promise<void>;
+  bookFacility: (payload?: Partial<SimpleRecord>) => Promise<void>;
+  submitRenovation: (payload?: Partial<SimpleRecord>) => Promise<void>;
   approveRenovation: (id: string) => Promise<void>;
   requestRenovationInfo: (id: string) => Promise<void>;
   updateFacilityBooking: (id: string, status: string) => Promise<void>;
   recordIncidentUpdate: (id: string) => Promise<void>;
+};
+
+type FormKind =
+  | 'sendMessage'
+  | 'createNotice'
+  | 'uploadDocument'
+  | 'reportIssue'
+  | 'bookFacility'
+  | 'submitRenovation'
+  | 'assignContractor'
+  | 'updateJobStatus'
+  | 'voteMotion';
+
+type FormContext = {
+  id?: string;
+  title?: string;
+  status?: string;
+};
+
+type ActiveForm = {
+  kind: FormKind;
+  context?: FormContext;
 };
 
 function App() {
@@ -126,24 +155,36 @@ function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [currentAccount, setCurrentAccount] = useState<TestAccount | null>(testAccounts.find((account) => account.role === 'portfolio_admin') ?? null);
   const [mvpData, setMvpData] = useState<MvpData>({
-    notices,
-    reportIssues,
-    maintenanceRequests,
-    messages,
-    documents,
-    notifications,
-    auditLogs,
-    motions,
-    facilityBookings,
-    renovations,
-    packages,
-    incidents
+    notices: [],
+    reportIssues: [],
+    maintenanceRequests: [],
+    messages: [],
+    documents: [],
+    notifications: [],
+    auditLogs: [],
+    motions: [],
+    facilityBookings: [],
+    renovations: [],
+    packages: [],
+    incidents: [],
+    buildingConfigurations: []
   });
   const [actionStatus, setActionStatus] = useState('Workspace ready. Use Switch Role to test each Atlas experience.');
+  const [activeForm, setActiveForm] = useState<ActiveForm | null>(null);
 
   const devRoleSwitcher = true;
 
-  const visibleNav = useMemo(() => navItems.filter((item) => item.roles.includes(role)), [role]);
+  const activeBuildingId = currentAccount?.buildingId ?? roleBuildingScope[role]?.[0] ?? 'b1';
+  const buildingConfig = useMemo(() => resolveBuildingConfig(mvpData, activeBuildingId), [mvpData, activeBuildingId]);
+  const visibleNav = useMemo(() => navItems.filter((item) => {
+    if (!item.roles.includes(role)) return false;
+    if (role === 'resident' && item.id === 'packages') return buildingConfig.packageManagement.enabled;
+    if (role === 'resident' && item.id === 'facilities') return activeFacilities(buildingConfig).length > 0;
+    if (role === 'resident' && item.id === 'my_levies') {
+      return buildingConfig.residentPermissions.leviesVisibleTo === 'owners and tenants' || currentAccount?.title.toLowerCase().includes('owner');
+    }
+    return true;
+  }), [role, buildingConfig, currentAccount]);
 
   function defaultPageForRole(nextRole: Role): PageId {
     const defaultPageByRole: Record<Role, PageId> = {
@@ -159,9 +200,9 @@ function App() {
 
   useEffect(() => {
     if (!currentAccount) return;
-    loadMvpData(currentAccount, role).then(setMvpData).catch(() => {
-      setActionStatus('Could not load Supabase data. Using local seeded data.');
-    });
+    loadMvpData(currentAccount, role)
+      .then(setMvpData)
+      .catch((error) => setActionStatus(error instanceof Error ? error.message : 'Could not load Supabase data.'));
   }, [currentAccount, role]);
 
   async function loginAs(account: TestAccount) {
@@ -182,106 +223,71 @@ function App() {
     setPage(defaultPageForRole(nextRole));
   }
 
-  async function runAction(action: () => Promise<MvpActionResult>, mutate?: (current: MvpData) => MvpData) {
+  async function runAction(action: () => Promise<MvpActionResult>) {
     const result = await action();
-    if (result.ok && mutate) {
-      setMvpData((current) => mutate(current));
-    } else if (currentAccount) {
+    if (currentAccount) {
       const latest = await loadMvpData(currentAccount, role);
       setMvpData(latest);
     }
     setActionStatus(cleanActionMessage(result.message));
   }
 
-  const flowActions = {
-    reportIssue: (payload?: Partial<ReportIssue>) => runAction(() => createResidentIssue(currentAccount, payload), (current) => {
-      const issue = makeReportIssue(payload);
-      return appendActivity({
-        ...current,
-        reportIssues: [issue, ...current.reportIssues],
-        maintenanceRequests: [issueToMaintenance(issue), ...current.maintenanceRequests]
-      }, 'Issue reported', 'Resident issue received by manager', 'ri');
-    }),
-    assignContractor: (id?: string) => runAction(() => assignContractorToFirstJob(currentAccount), (current) => {
-      const targetId = id ?? current.maintenanceRequests.find((request) => request.buildingId === 'b1')?.id;
-      return appendActivity({
-        ...current,
-        maintenanceRequests: current.maintenanceRequests.map((request) => request.id === targetId ? { ...request, contractorId: 'c3', status: 'Assigned' } : request),
-        reportIssues: current.reportIssues.map((issue) => issue.buildingId === 'b1' && ['Triage', 'Open', 'Manager review'].includes(issue.status) ? { ...issue, status: 'Assigned' } : issue)
-      }, 'Contractor assigned', 'LiftCare NSW assigned to work order', 'wo');
-    }),
-    updateMaintenanceStatus: (id: string, status: string) => runAction(() => Promise.resolve({ ok: true, message: `Status updated to ${status}.` }), (current) => appendActivity({
-      ...current,
-      maintenanceRequests: current.maintenanceRequests.map((request) => request.id === id ? { ...request, status, overdue: false } : request)
-    }, 'Maintenance status updated', status, 'mr')),
-    updateIssueStatus: (id: string, status: string) => runAction(() => Promise.resolve({ ok: true, message: `Issue moved to ${status}.` }), (current) => appendActivity({
-      ...current,
-      reportIssues: current.reportIssues.map((issue) => issue.id === id ? { ...issue, status } : issue)
-    }, 'Issue triaged', status, 'ri')),
-    notifyResident: (id: string) => runAction(() => Promise.resolve({ ok: true, message: 'Resident notified.' }), (current) => appendActivity({
-      ...current,
-      reportIssues: current.reportIssues.map((issue) => issue.id === id ? { ...issue, status: issue.status === 'Triage' ? 'Under Review' : issue.status } : issue)
-    }, 'Resident notified', id, 'nt')),
-    contractorUpdate: (id?: string, status = 'In Progress') => runAction(() => addContractorUpdate(currentAccount), (current) => {
-      const targetId = id ?? current.maintenanceRequests.find((request) => request.contractorId === 'c3')?.id;
-      return appendActivity({
-        ...current,
-        maintenanceRequests: current.maintenanceRequests.map((request) => request.id === targetId ? { ...request, status, overdue: false } : request),
-        messages: [{ id: nextId('msg'), title: `Contractor update: ${status}`, buildingId: 'b1', owner: 'LiftCare NSW', status: 'Open', due: todayLabel(), meta: 'Progress update added' }, ...current.messages]
-      }, 'Contractor job updated', status, 'cu');
-    }),
-    createNotice: () => runAction(() => createNotice(currentAccount), (current) => appendActivity({
-      ...current,
-      notices: [{
-        id: nextId('n'),
-        title: 'Lift maintenance update',
-        category: 'Maintenance update',
-        buildingId: 'b1',
-        priority: 'Medium',
-        audience: 'All residents',
-        publishAt: todayLabel(),
-        channels: ['in-app'],
-        reads: 0,
-        body: 'Lift contractor attendance is scheduled. Residents will be updated after completion.'
-      }, ...current.notices]
-    }, 'Notice published', 'Residents notified in app', 'n')),
-    sendMessage: () => runAction(() => sendResidentMessage(currentAccount), (current) => appendActivity({
-      ...current,
-      messages: [{ id: nextId('msg'), title: 'Resident message to building manager', buildingId: 'b1', owner: currentAccount?.name ?? 'Resident', status: 'Unread', due: todayLabel(), meta: 'Resident-manager thread' }, ...current.messages]
-    }, 'Message sent', 'Building manager inbox updated', 'msg')),
-    uploadDocument: () => runAction(() => uploadDocument(currentAccount), (current) => appendActivity({
-      ...current,
-      documents: [{ id: nextId('d'), title: 'Committee minutes - June', buildingId: 'b1', owner: currentAccount?.name ?? 'Manager', status: 'Visible', due: todayLabel(), meta: 'Meeting minutes' }, ...current.documents]
-    }, 'Document uploaded', 'Visible to permitted residents', 'd')),
-    vote: () => runAction(() => voteOnMotion(currentAccount), (current) => appendActivity({
-      ...current,
-      motions: current.motions.map((motion) => motion.id === 'cm2' ? { ...motion, status: 'Approved', meta: '6 yes, 1 abstain' } : motion)
-    }, 'Committee vote recorded', 'Motion tally updated', 'cm')),
-    bookFacility: () => runAction(() => Promise.resolve({ ok: true, message: 'Facility booking submitted.' }), (current) => appendActivity({
-      ...current,
-      facilityBookings: [{ id: nextId('fb'), title: 'Rooftop BBQ booking', buildingId: 'b1', owner: currentAccount?.name ?? 'Resident', status: 'Submitted', due: '2026-06-18', meta: 'Awaiting manager approval' }, ...current.facilityBookings]
-    }, 'Facility booking submitted', 'Manager approval required', 'fb')),
-    submitRenovation: () => runAction(() => Promise.resolve({ ok: true, message: 'Renovation request submitted.' }), (current) => appendActivity({
-      ...current,
-      renovations: [{ id: nextId('r'), title: 'Apartment renovation request', buildingId: 'b1', owner: currentAccount?.name ?? 'Resident', status: 'Manager Review', due: '2026-06-21', meta: 'Scope, dates and by-law acknowledgement received' }, ...current.renovations]
-    }, 'Renovation request submitted', 'Manager review started', 'r')),
-    approveRenovation: (id: string) => runAction(() => Promise.resolve({ ok: true, message: 'Renovation request approved.' }), (current) => appendActivity({
-      ...current,
-      renovations: current.renovations.map((renovation) => renovation.id === id ? { ...renovation, status: 'Approved', meta: 'Approved with standard noise conditions' } : renovation)
-    }, 'Renovation approved', id, 'r')),
-    requestRenovationInfo: (id: string) => runAction(() => Promise.resolve({ ok: true, message: 'More information requested.' }), (current) => appendActivity({
-      ...current,
-      renovations: current.renovations.map((renovation) => renovation.id === id ? { ...renovation, status: 'More Info Required', meta: 'Acoustic certificate and contractor insurance requested' } : renovation)
-    }, 'Renovation information requested', id, 'r')),
-    updateFacilityBooking: (id: string, status: string) => runAction(() => Promise.resolve({ ok: true, message: `Facility booking ${status.toLowerCase()}.` }), (current) => appendActivity({
-      ...current,
-      facilityBookings: current.facilityBookings.map((booking) => booking.id === id ? { ...booking, status, meta: status === 'Approved' ? 'Resident notified in app' : 'Manager review completed' } : booking)
-    }, 'Facility booking updated', status, 'fb')),
-    recordIncidentUpdate: (id: string) => runAction(() => Promise.resolve({ ok: true, message: 'Incident updated.' }), (current) => appendActivity({
-      ...current,
-      incidents: current.incidents.map((incident) => incident.id === id ? { ...incident, status: 'In progress', meta: 'Manager note added and audit trail updated' } : incident)
-    }, 'Incident updated', id, 'i'))
+  const flowActions: FlowActions = {
+    openForm: (kind: FormKind, context?: FormContext) => setActiveForm({ kind, context }),
+    reportIssue: (payload?: Partial<ReportIssue>) => runAction(() => createResidentIssue(currentAccount, payload)),
+    assignContractor: (id?: string) => runAction(() => assignContractorToFirstJob(currentAccount, id)),
+    updateMaintenanceStatus: (id: string, status: string, note?: string) => runAction(() => updateMaintenanceRequestStatus(currentAccount, id, status, note)),
+    updateIssueStatus: (id: string, status: string) => runAction(() => updateReportIssueStatus(currentAccount, id, status)),
+    notifyResident: (id: string) => runAction(() => updateReportIssueStatus(currentAccount, id, 'Under Review')),
+    contractorUpdate: (id?: string, status = 'In Progress', note?: string) => runAction(() => addContractorUpdate(currentAccount, id, status, note)),
+    createNotice: (payload?: Partial<Notice>) => runAction(() => createNotice(currentAccount, payload)),
+    sendMessage: (payload?: Partial<SimpleRecord>) => runAction(() => sendResidentMessage(currentAccount, payload)),
+    uploadDocument: (payload?: Partial<SimpleRecord>) => runAction(() => uploadDocument(currentAccount, payload)),
+    vote: (payload?: Partial<SimpleRecord>) => runAction(() => voteOnMotion(currentAccount, payload)),
+    bookFacility: (payload?: Partial<SimpleRecord>) => runAction(() => bookFacility(currentAccount, payload)),
+    submitRenovation: (payload?: Partial<SimpleRecord>) => runAction(() => submitRenovation(currentAccount, payload)),
+    approveRenovation: (id: string) => runAction(() => updateRenovationStatus(currentAccount, id, 'Approved', 'Approved with standard noise conditions')),
+    requestRenovationInfo: (id: string) => runAction(() => updateRenovationStatus(currentAccount, id, 'More Info Required', 'Acoustic certificate and contractor insurance requested')),
+    updateFacilityBooking: (id: string, status: string) => runAction(() => updateFacilityBooking(currentAccount, id, status)),
+    recordIncidentUpdate: (_id: string) => runAction(() => Promise.resolve({ ok: false, message: 'Incident persistence is not part of this Supabase pass yet.' }))
   };
+
+  async function submitWorkflowForm(payload: Record<string, string>, context?: FormContext) {
+    if (!activeForm) return;
+    const targetId = context?.id;
+    if (activeForm.kind === 'sendMessage') {
+      await flowActions.sendMessage({ title: payload.title, meta: payload.body });
+    }
+    if (activeForm.kind === 'createNotice') {
+      await flowActions.createNotice({ title: payload.title, category: payload.category, priority: payload.priority as Priority, body: payload.body, audience: payload.audience });
+    }
+    if (activeForm.kind === 'uploadDocument') {
+      await flowActions.uploadDocument({ title: payload.title, status: payload.visibility, meta: payload.category });
+    }
+    if (activeForm.kind === 'reportIssue') {
+      await flowActions.reportIssue({ title: payload.title, category: payload.category as ReportIssue['category'], severity: payload.severity as Priority, description: payload.description });
+    }
+    if (activeForm.kind === 'bookFacility') {
+      await flowActions.bookFacility({ title: payload.title, due: payload.date, meta: payload.notes });
+    }
+    if (activeForm.kind === 'submitRenovation') {
+      await flowActions.submitRenovation({ title: payload.title, due: payload.date, meta: payload.scope });
+    }
+    if (activeForm.kind === 'assignContractor') {
+      await flowActions.assignContractor(targetId);
+    }
+    if (activeForm.kind === 'updateJobStatus' && targetId) {
+      if (role === 'contractor') {
+        await flowActions.contractorUpdate(targetId, payload.status, payload.note);
+      } else {
+        await flowActions.updateMaintenanceStatus(targetId, payload.status, payload.note);
+      }
+    }
+    if (activeForm.kind === 'voteMotion') {
+      await flowActions.vote({ id: targetId, meta: payload.vote });
+    }
+    setActiveForm(null);
+  }
 
   if (publicView !== 'app') {
     return <PublicSite view={publicView} setView={setPublicView} loginAs={loginAs} />;
@@ -354,6 +360,9 @@ function App() {
                 </select>
               </label>
             )}
+            <span className="hidden rounded-full bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-700 ring-1 ring-blue-200 lg:inline-flex">
+              Testing Mode
+            </span>
             <button className="icon-button" aria-label="Notifications">
               <Bell size={18} />
             </button>
@@ -366,9 +375,18 @@ function App() {
           <div className="mb-4 rounded-2xl border border-line bg-white px-4 py-3 text-sm text-slate-600 shadow-sm">
             {actionStatus}
           </div>
-          <PageRouter page={page} role={role} onNavigate={setPage} data={mvpData} actions={flowActions} />
+          <PageRouter page={page} role={role} onNavigate={setPage} data={mvpData} actions={flowActions} buildingConfig={buildingConfig} />
         </main>
       </div>
+      <WorkflowModal
+        key={activeForm ? `${activeForm.kind}-${activeForm.context?.id ?? 'new'}` : 'closed'}
+        activeForm={activeForm}
+        role={role}
+        data={mvpData}
+        buildingConfig={buildingConfig}
+        onClose={() => setActiveForm(null)}
+        onSubmit={submitWorkflowForm}
+      />
     </div>
   );
 }
@@ -518,21 +536,21 @@ function PublicSite({
   );
 }
 
-function PageRouter({ page, role, onNavigate, data, actions }: { page: PageId; role: Role; onNavigate: (page: PageId) => void; data: MvpData; actions: FlowActions }) {
+function PageRouter({ page, role, onNavigate, data, actions, buildingConfig }: { page: PageId; role: Role; onNavigate: (page: PageId) => void; data: MvpData; actions: FlowActions; buildingConfig: BuildingConfiguration }) {
   if (page === 'portfolio' && role === 'super_admin') return <PlatformDashboard onNavigate={onNavigate} data={data} />;
   if (page === 'portfolio' && role === 'manager') return <ManagerDashboard onNavigate={onNavigate} data={data} actions={actions} />;
   if (page === 'portfolio') return <PortfolioDashboard role={role} onNavigate={onNavigate} data={data} />;
-  if (page === 'buildings') return <BuildingsPage role={role} />;
-  if (page === 'building' && (role === 'manager' || role === 'portfolio_admin')) return <BuildingDashboard role={role} />;
-  if (page === 'resident') return <ResidentDashboard role={role} onNavigate={onNavigate} data={data} />;
+  if (page === 'buildings') return <BuildingsPage role={role} data={data} />;
+  if (page === 'building' && (role === 'manager' || role === 'portfolio_admin')) return <BuildingDashboard role={role} data={data} buildingConfig={buildingConfig} />;
+  if (page === 'resident') return <ResidentDashboard role={role} onNavigate={onNavigate} data={data} actions={actions} buildingConfig={buildingConfig} />;
   if (page === 'committee') return <CommitteeDashboard role={role} onNavigate={onNavigate} data={data} actions={actions} />;
   if (page === 'motions') return <MotionsPage role={role} data={data} actions={actions} />;
   if (page === 'quotes') return <QuotesPage role={role} />;
   if (page === 'meetings') return <MeetingsPage role={role} />;
   if (page === 'contractor') return <ContractorDashboard role={role} data={data} actions={actions} />;
   if (page === 'communications') return <CommunicationsHub role={role} onNavigate={onNavigate} data={data} actions={actions} />;
-  if (page === 'report_issue') return <ReportIssuePage role={role} data={data} actions={actions} />;
-  if (page === 'directory') return <BuildingDirectoryPage role={role} />;
+  if (page === 'report_issue') return <ReportIssuePage role={role} data={data} actions={actions} buildingConfig={buildingConfig} />;
+  if (page === 'directory') return <BuildingDirectoryPage role={role} buildingConfig={buildingConfig} data={data} />;
   if (page === 'my_levies') return <MyLeviesPage role={role} />;
   if (page === 'levy_management' && role === 'portfolio_admin') return <LevyManagementPage role={role} />;
   if (page === 'my_requests') return <MyRequestsPage role={role} data={data} actions={actions} />;
@@ -540,10 +558,12 @@ function PageRouter({ page, role, onNavigate, data, actions }: { page: PageId; r
   if (page === 'documents') return <DocumentsPage role={role} data={data} actions={actions} />;
   if (page === 'maintenance') return <MaintenancePage role={role} data={data} actions={actions} />;
   if (page === 'projects') return <ProjectsPage role={role} />;
-  if (page === 'facilities') return <FacilitiesPage role={role} data={data} actions={actions} />;
-  if (page === 'renovations') return <RenovationsPage role={role} data={data} actions={actions} />;
-  if (page === 'packages' && role === 'resident') return <PackagesPage role={role} data={data} />;
+  if (page === 'facilities') return <FacilitiesPage role={role} data={data} actions={actions} buildingConfig={buildingConfig} />;
+  if (page === 'renovations') return <RenovationsPage role={role} data={data} actions={actions} buildingConfig={buildingConfig} />;
+  if (page === 'packages' && role === 'resident') return <PackagesPage role={role} data={data} buildingConfig={buildingConfig} />;
   if (page === 'incidents') return <IncidentsPage role={role} data={data} actions={actions} />;
+  if (page === 'compliance') return <CompliancePage role={role} buildingConfig={buildingConfig} />;
+  if (page === 'building_settings' && role === 'manager') return <BuildingSettingsPage buildingConfig={buildingConfig} />;
   if (page === 'staff_performance') return <PerformancePage title="Staff Performance" eyebrow="Portfolio workload and response health" records={staffPerformanceRecords()} />;
   if (page === 'contractor_performance') return <PerformancePage title="Contractor Performance" eyebrow="Response time, compliance and job quality" records={contractorPerformanceRecords()} />;
   if (page === 'arrears_overview') return <LevyManagementPage role="portfolio_admin" />;
@@ -571,9 +591,10 @@ function PageRouter({ page, role, onNavigate, data, actions }: { page: PageId; r
     maintenance: { title: '', eyebrow: '', records: [], cta: '' },
     projects: { title: '', eyebrow: '', records: [], cta: '' },
     incidents: { title: 'Incident Register', eyebrow: 'Insurance, WHS and complaints', records: data.incidents, cta: 'Record incident' },
-    compliance: { title: 'Compliance Dashboard', eyebrow: 'AFSS, lifts, insurance, WHS and Strata Hub', records: complianceItems, cta: 'Add compliance item' },
+    compliance: { title: '', eyebrow: '', records: [], cta: '' },
     documents: { title: 'Documents Library', eyebrow: 'Permissions, versions, search and downloads', records: data.documents, cta: 'Upload document' },
     facilities: { title: '', eyebrow: '', records: [], cta: '' },
+    building_settings: { title: '', eyebrow: '', records: [], cta: '' },
     renovations: { title: '', eyebrow: '', records: [], cta: '' },
     packages: { title: '', eyebrow: '', records: [], cta: '' },
     my_levies: { title: '', eyebrow: '', records: [], cta: '' },
@@ -631,7 +652,7 @@ function ManagerDashboard({ onNavigate, data, actions }: { onNavigate: (page: Pa
   const upcomingMeetings = filterForRole(meetings, 'manager').slice(0, 3);
   return (
     <div className="space-y-6">
-      <SectionHeader eyebrow="Manager workspace" title="Assigned buildings need attention" action={<button className="btn-primary" onClick={() => onNavigate('communications')}><Bell size={17} /> Create notice</button>} />
+      <SectionHeader eyebrow="Manager workspace" title="Assigned buildings need attention" action={<button className="btn-primary" onClick={() => actions.openForm('createNotice')}><Bell size={17} /> Create notice</button>} />
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <Metric title="Assigned buildings" value={assignedBuildings.length.toString()} detail="Harbourline, Glebe Foundry" icon={Building2} />
         <Metric title="Emergency issues" value={emergencyIssues.length.toString()} detail={`${overdue.length} overdue work orders`} icon={AlertTriangle} tone="red" />
@@ -719,7 +740,7 @@ function PortfolioDashboard({ role, onNavigate, data }: { role: Role; onNavigate
   );
 }
 
-function BuildingsPage({ role }: { role: Role }) {
+function BuildingsPage({ role, data }: { role: Role; data: MvpData }) {
   const scopedBuildings = role === 'manager' ? buildings.slice(0, 2) : buildings;
   return (
     <div className="space-y-6">
@@ -736,7 +757,7 @@ function BuildingsPage({ role }: { role: Role }) {
             </div>
             <div className="mt-5 grid gap-3 sm:grid-cols-3">
               <MiniStat label="Manager" value={building.manager} />
-              <MiniStat label="Open jobs" value={maintenanceRequests.filter((request) => request.buildingId === building.id && request.status !== 'Closed').length.toString()} />
+              <MiniStat label="Open jobs" value={data.maintenanceRequests.filter((request) => request.buildingId === building.id && request.status !== 'Closed').length.toString()} />
               <MiniStat label="Compliance" value={complianceItems.filter((item) => item.buildingId === building.id && item.status === 'Overdue').length ? 'At risk' : 'On track'} />
             </div>
           </article>
@@ -746,10 +767,12 @@ function BuildingsPage({ role }: { role: Role }) {
   );
 }
 
-function BuildingDashboard({ role }: { role: Role }) {
+function BuildingDashboard({ role, data, buildingConfig }: { role: Role; data: MvpData; buildingConfig: BuildingConfiguration }) {
   const building = role === 'manager' ? buildings[0] : buildings[3];
-  const buildingMaintenance = maintenanceRequests.filter((request) => request.buildingId === building.id);
-  const directory = buildingDirectories.find((item) => item.buildingId === building.id) ?? buildingDirectories[0];
+  const dashboardConfig = role === 'manager' ? buildingConfig : resolveBuildingConfig(data, building.id);
+  const buildingMaintenance = data.maintenanceRequests.filter((request) => request.buildingId === building.id);
+  const buildingNotices = data.notices.filter((notice) => notice.buildingId === building.id);
+  const activeCompliance = dashboardConfig.compliance.filter((item) => item.enabled);
   return (
     <div className="space-y-6">
       <SectionHeader eyebrow="Building dashboard" title={building.name} action={<ComingSoonButton primary icon={<Bell size={17} />} label="Create alert" />} />
@@ -757,7 +780,7 @@ function BuildingDashboard({ role }: { role: Role }) {
         <Metric title="Lots" value={building.lots.toString()} detail={building.address} icon={Building2} />
         <Metric title="Open issues" value={buildingMaintenance.filter((item) => item.status !== 'Closed').length.toString()} detail="Maintenance and incidents" icon={AlertTriangle} tone="amber" />
         <Metric title="Active projects" value={projects.filter((project) => project.buildingId === building.id).length.toString()} detail="Committee visible" icon={Vote} tone="blue" />
-        <Metric title="Compliance risk" value={complianceItems.filter((item) => item.buildingId === building.id && item.status === 'Overdue').length.toString()} detail="Overdue items" icon={ShieldCheck} tone="red" />
+        <Metric title="Compliance scope" value={activeCompliance.length.toString()} detail="Configured requirements" icon={ShieldCheck} tone="red" />
       </div>
       <div className="grid gap-5 xl:grid-cols-3">
         <Panel title="Building profile">
@@ -765,33 +788,45 @@ function BuildingDashboard({ role }: { role: Role }) {
             ['Address', building.address],
             ['Assigned manager', building.manager],
             ['Committee members', committeeMembers.filter((person) => person.buildingId === building.id).map((person) => person.name).join(', ') || '4 seeded members'],
-            ['Facility bookings', facilityBookings.filter((item) => item.buildingId === building.id).length.toString()],
-            ['Documents', documents.filter((item) => item.buildingId === building.id).length.toString()]
+            ['Facility bookings', data.facilityBookings.filter((item) => item.buildingId === building.id).length.toString()],
+            ['Documents', data.documents.filter((item) => item.buildingId === building.id).length.toString()]
           ]} />
         </Panel>
-        <DirectoryPanel directory={directory} />
+        <DirectoryPanel buildingConfig={dashboardConfig} role={role} />
         <Panel title="Upcoming and active" className="xl:col-span-2">
-          <RecordTable records={[...filterForRole(notices, role).slice(0, 3).map(noticeToRecord), ...buildingMaintenance.slice(0, 3).map(maintenanceToRecord)]} />
+          <RecordTable records={[...buildingNotices.slice(0, 3).map(noticeToRecord), ...buildingMaintenance.slice(0, 3).map(maintenanceToRecord)]} />
         </Panel>
       </div>
     </div>
   );
 }
 
-function ResidentDashboard({ role, onNavigate, data }: { role: Role; onNavigate: (page: PageId) => void; data: MvpData }) {
+function ResidentDashboard({ role, onNavigate, data, actions, buildingConfig }: { role: Role; onNavigate: (page: PageId) => void; data: MvpData; actions: FlowActions; buildingConfig: BuildingConfiguration }) {
   const feed = filterForRole(data.notices, role);
   const ownRequests = filterPrivateForRole(data.maintenanceRequests, role);
   const upcomingBooking = filterPrivateForRole(data.facilityBookings, role)[0];
-  const awaitingPackage = filterPrivateForRole(data.packages, role).find((item) => item.status === 'Awaiting collection');
-  const directory = buildingDirectories[0];
+  const awaitingPackage = buildingConfig.packageManagement.enabled ? filterPrivateForRole(data.packages, role).find((item) => item.status === 'Awaiting collection') : undefined;
+  const quickActions: [string, PageId][] = [
+    ['See notices', 'communications'],
+    ['Report an issue', 'report_issue'],
+    ['View documents', 'documents'],
+    ...(activeFacilities(buildingConfig).length ? [['Book facilities', 'facilities'] as [string, PageId]] : []),
+    ...(buildingConfig.residentPermissions.leviesVisibleTo === 'owners and tenants' ? [['View my levies', 'my_levies'] as [string, PageId]] : [['View my levies', 'my_levies'] as [string, PageId]]),
+    ['Check building contacts', 'directory'],
+    ['Track requests', 'my_requests']
+  ];
   return (
     <div className="mx-auto max-w-5xl space-y-5">
-      <SectionHeader eyebrow="Resident home" title="Harbourline Residences" action={<button className="btn-primary" onClick={() => onNavigate('report_issue')}><Plus size={17} /> Report issue</button>} />
+      <SectionHeader eyebrow="Resident home" title={buildingConfig.profile.name} action={<button className="btn-primary" onClick={() => actions.openForm('reportIssue')}><Plus size={17} /> Report issue</button>} />
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Metric title="Notices" value={feed.length.toString()} detail="Latest building updates" icon={Bell} />
         <Metric title="Open request" value={ownRequests[0]?.status ?? 'Clear'} detail={ownRequests[0]?.title ?? 'No active requests'} icon={Clock3} tone="amber" />
         <Metric title="Next booking" value={upcomingBooking?.due ?? 'None'} detail={upcomingBooking?.title ?? 'No bookings scheduled'} icon={CalendarDays} tone="blue" />
-        <Metric title="Package" value={awaitingPackage ? 'Waiting' : 'Clear'} detail={awaitingPackage?.title ?? 'No packages awaiting collection'} icon={FileText} tone="green" />
+        {buildingConfig.packageManagement.enabled ? (
+          <Metric title="Package" value={awaitingPackage ? 'Waiting' : 'Clear'} detail={awaitingPackage?.title ?? 'No packages awaiting collection'} icon={FileText} tone="green" />
+        ) : (
+          <Metric title="Building contact" value={visibleContacts(buildingConfig, role)[0]?.type ?? 'Directory'} detail={visibleContacts(buildingConfig, role)[0]?.name ?? 'Configured per building'} icon={FileText} tone="green" />
+        )}
       </div>
       <div className="grid gap-5 lg:grid-cols-[1.1fr_0.9fr]">
         <Panel title="Building feed">
@@ -810,15 +845,7 @@ function ResidentDashboard({ role, onNavigate, data }: { role: Role; onNavigate:
         </Panel>
         <Panel title="Your quick actions">
           <div className="grid gap-3">
-            {[
-              ['See notices', 'communications'],
-              ['Report an issue', 'report_issue'],
-              ['View documents', 'documents'],
-              ['Book facilities', 'facilities'],
-              ['View my levies', 'my_levies'],
-              ['Check building contacts', 'directory'],
-              ['Track requests', 'my_requests']
-            ].map(([label, target]) => (
+            {quickActions.map(([label, target]) => (
               <button className="flex items-center justify-between rounded-2xl border border-line px-4 py-3 text-left hover:bg-slate-50" key={label} onClick={() => onNavigate(target as PageId)}>
                 <span className="font-medium">{label}</span>
                 <ArrowRight size={17} />
@@ -826,7 +853,7 @@ function ResidentDashboard({ role, onNavigate, data }: { role: Role; onNavigate:
             ))}
           </div>
         </Panel>
-        <DirectoryPanel directory={directory} className="lg:col-span-2" />
+        <DirectoryPanel buildingConfig={buildingConfig} role={role} className="lg:col-span-2" />
       </div>
     </div>
   );
@@ -851,7 +878,7 @@ function CommitteeDashboard({ role, onNavigate, data, actions }: { role: Role; o
                 <h3 className="font-semibold">{motion.title}</h3>
                 <p className="mt-1 text-sm text-slate-500">{motion.meta}</p>
                 <div className="mt-4 flex gap-2">
-                  <button className="btn-secondary" onClick={actions.vote}>Vote yes</button>
+                  <button className="btn-secondary" onClick={() => actions.openForm('voteMotion', { id: motion.id, title: motion.title })}>Vote</button>
                   <ComingSoonButton label="Abstain" />
                 </div>
               </div>
@@ -874,7 +901,12 @@ function ContractorDashboard({ role, data, actions }: { role: Role; data: MvpDat
         <Metric title="Quotes requested" value="2" detail="Upload quote PDFs" icon={FileText} tone="amber" />
         <Metric title="Insurance expiry" value="17 days" detail="Reminder active" icon={ShieldCheck} tone="red" />
       </div>
-      <MaintenanceCards requests={assigned} contractorView onContractorUpdate={actions.contractorUpdate} onStatusUpdate={(id) => actions.contractorUpdate(id, 'Viewed')} />
+      <MaintenanceCards
+        requests={assigned}
+        contractorView
+        onContractorUpdate={(id, status) => actions.openForm('updateJobStatus', { id, status, title: assigned.find((request) => request.id === id)?.title })}
+        onStatusUpdate={(id, status) => actions.openForm('updateJobStatus', { id, status, title: assigned.find((request) => request.id === id)?.title })}
+      />
     </div>
   );
 }
@@ -894,7 +926,7 @@ function CommunicationsHub({ role, onNavigate, data, actions }: { role: Role; on
 
   return (
     <div className="space-y-6">
-      <SectionHeader eyebrow="Communications Hub" title="Feed, notices, messages and alerts" action={<button className="btn-primary" onClick={role === 'manager' || role === 'portfolio_admin' ? actions.createNotice : () => onNavigate('messages')}><Plus size={17} /> {role === 'manager' || role === 'portfolio_admin' ? 'Create notice' : 'Message manager'}</button>} />
+      <SectionHeader eyebrow="Communications Hub" title="Feed, notices, messages and alerts" action={<button className="btn-primary" onClick={() => actions.openForm(role === 'manager' || role === 'portfolio_admin' ? 'createNotice' : 'sendMessage')}><Plus size={17} /> {role === 'manager' || role === 'portfolio_admin' ? 'Create notice' : 'Message manager'}</button>} />
       <Panel title="Communication centre" action={<NotificationRules />}>
         <div className="mb-5 flex flex-wrap gap-2">
           {tabs.map((tabName) => (
@@ -915,14 +947,14 @@ function CommunicationsHub({ role, onNavigate, data, actions }: { role: Role; on
   );
 }
 
-function ReportIssuePage({ role, data, actions }: { role: Role; data: MvpData; actions: FlowActions }) {
+function ReportIssuePage({ role, data, actions, buildingConfig }: { role: Role; data: MvpData; actions: FlowActions; buildingConfig: BuildingConfiguration }) {
   const scopedIssues = filterPrivateForRole(data.reportIssues, role);
-  const categories: ReportIssue['category'][] = ['Maintenance', 'Damage', 'Security', 'Noise', 'Safety', 'Other'];
-  const [selectedCategory, setSelectedCategory] = useState<ReportIssue['category']>('Maintenance');
+  const categories = enabledIssueCategories(buildingConfig);
+  const [selectedCategory, setSelectedCategory] = useState<ReportIssue['category']>((categories[0]?.label ?? 'Other') as ReportIssue['category']);
 
   return (
     <div className="mx-auto max-w-5xl space-y-6">
-      <SectionHeader eyebrow="Report Issue" title="One simple flow for residents" action={<button className="btn-primary" onClick={() => actions.reportIssue({ category: selectedCategory })}><Plus size={17} /> Submit issue</button>} />
+      <SectionHeader eyebrow="Report Issue" title="One simple flow for residents" action={<button className="btn-primary" onClick={() => actions.openForm('reportIssue')}><Plus size={17} /> Submit issue</button>} />
       <div className="grid gap-5 lg:grid-cols-[0.8fr_1.2fr]">
         <Panel title="New issue">
           <div className="grid gap-4">
@@ -931,12 +963,13 @@ function ReportIssuePage({ role, data, actions }: { role: Role; data: MvpData; a
               <div className="mt-2 grid grid-cols-2 gap-2">
                 {categories.map((category) => (
                   <button
-                    className={`rounded-2xl border px-3 py-3 text-sm font-semibold hover:bg-slate-50 ${selectedCategory === category ? 'border-ink bg-slate-50 text-ink' : 'border-line text-slate-600'}`}
-                    key={category}
-                    onClick={() => setSelectedCategory(category)}
+                    className={`rounded-2xl border px-3 py-3 text-sm font-semibold hover:bg-slate-50 ${selectedCategory === category.label ? 'border-ink bg-slate-50 text-ink' : 'border-line text-slate-600'}`}
+                    key={category.id}
+                    onClick={() => setSelectedCategory(category.label as ReportIssue['category'])}
                     type="button"
                   >
-                    {category}
+                    <span>{category.label}</span>
+                    <span className="mt-1 block text-xs font-medium text-slate-400">{category.defaultPriority}</span>
                   </button>
                 ))}
               </div>
@@ -946,7 +979,7 @@ function ReportIssuePage({ role, data, actions }: { role: Role; data: MvpData; a
               <textarea className="mt-2 min-h-28 w-full rounded-2xl border border-line px-4 py-3 outline-none focus:border-harbour" placeholder="Describe the issue, location and urgency" />
             </label>
             <div className="rounded-2xl bg-slate-50 p-4 text-sm leading-6 text-slate-600">
-              The system routes each report into maintenance, incidents, or both based on category and severity.
+              {buildingConfig.profile.name} only shows issue categories enabled for this building. The system routes each report into maintenance, incidents, or both based on category and severity.
             </div>
           </div>
         </Panel>
@@ -958,13 +991,31 @@ function ReportIssuePage({ role, data, actions }: { role: Role; data: MvpData; a
   );
 }
 
-function BuildingDirectoryPage({ role }: { role: Role }) {
-  const directories = filterForRole(buildingDirectories, role);
+function BuildingDirectoryPage({ role, buildingConfig, data }: { role: Role; buildingConfig: BuildingConfiguration; data: MvpData }) {
+  const visible = visibleContacts(buildingConfig, role);
   return (
     <div className="space-y-6">
-      <SectionHeader eyebrow="Building Directory" title="Contacts residents need quickly" action={<ComingSoonButton primary icon={<Plus size={17} />} label="Update contacts" />} />
+      <SectionHeader eyebrow="Building Directory" title={`${buildingConfig.profile.name} contacts`} action={role === 'manager' ? <span className="pill bg-blue-50 text-blue-700 ring-blue-200">Managed in Building Settings</span> : undefined} />
       <div className="grid gap-5 lg:grid-cols-2">
-        {directories.map((directory) => <DirectoryPanel directory={directory} key={directory.buildingId} />)}
+        {visible.length ? (
+          <DirectoryPanel buildingConfig={buildingConfig} role={role} className="lg:col-span-2" />
+        ) : (
+          <Panel title="Contacts">
+            <EmptyState title="No contacts configured" copy="Building contacts will appear here once the strata manager adds them in Building Settings." />
+          </Panel>
+        )}
+        {(role === 'manager' || role === 'portfolio_admin') && (
+          <Panel title="Configured buildings">
+            <RecordTable records={data.buildingConfigurations.map((config) => ({
+              id: config.buildingId,
+              title: config.profile.name,
+              buildingId: config.buildingId,
+              owner: config.profile.buildingType,
+              status: config.packageManagement.enabled ? 'Package enabled' : 'Package disabled',
+              meta: `${activeFacilities(config).length} facilities · ${config.contacts.length} contacts`
+            }))} />
+          </Panel>
+        )}
       </div>
     </div>
   );
@@ -1060,7 +1111,7 @@ function LevyManagementPage({ role }: { role: Role }) {
 function MyRequestsPage({ role, data, actions }: { role: Role; data: MvpData; actions: FlowActions }) {
   return (
     <div className="mx-auto max-w-5xl space-y-6">
-      <SectionHeader eyebrow="My Requests" title="Track reported issues" action={<button className="btn-primary" onClick={() => actions.reportIssue()}><Plus size={17} /> Report issue</button>} />
+      <SectionHeader eyebrow="My Requests" title="Track reported issues" action={<button className="btn-primary" onClick={() => actions.openForm('reportIssue')}><Plus size={17} /> Report issue</button>} />
       <Panel title="Request progress">
         <ReportIssueList issues={filterPrivateForRole(data.reportIssues, role)} />
       </Panel>
@@ -1076,7 +1127,7 @@ function MessagesPage({ role, data, actions }: { role: Role; data: MvpData; acti
       : filterForRole(data.messages, role);
   return (
     <div className="space-y-6">
-      <SectionHeader eyebrow="Messages" title="Building conversations and manager replies" action={(role === 'resident' || role === 'committee') ? <button className="btn-primary" onClick={actions.sendMessage}><MessageSquare size={17} /> Send message</button> : undefined} />
+      <SectionHeader eyebrow="Messages" title="Building conversations and manager replies" action={(role === 'resident' || role === 'committee' || role === 'manager') ? <button className="btn-primary" onClick={() => actions.openForm('sendMessage')}><MessageSquare size={17} /> Send message</button> : undefined} />
       <Panel title="Conversations">
         <RecordTable records={records} />
       </Panel>
@@ -1093,7 +1144,7 @@ function DocumentsPage({ role, data, actions }: { role: Role; data: MvpData; act
       <SectionHeader
         eyebrow="Documents"
         title={role === 'resident' ? 'Building documents' : 'Document library'}
-        action={(role === 'manager' || role === 'portfolio_admin') ? <button className="btn-primary" onClick={actions.uploadDocument}><Plus size={17} /> Upload document</button> : undefined}
+        action={(role === 'manager' || role === 'portfolio_admin') ? <button className="btn-primary" onClick={() => actions.openForm('uploadDocument')}><Plus size={17} /> Upload document</button> : undefined}
       />
       <Panel title="Available documents">
         <RecordTable records={records} />
@@ -1108,7 +1159,12 @@ function MaintenancePage({ role, data, actions }: { role: Role; data: MvpData; a
     return (
       <div className="space-y-6">
         <SectionHeader eyebrow="Assigned Jobs" title="LiftCare NSW work queue" />
-        <MaintenanceCards requests={assigned} contractorView onContractorUpdate={actions.contractorUpdate} onStatusUpdate={(id) => actions.contractorUpdate(id, 'Viewed')} />
+        <MaintenanceCards
+          requests={assigned}
+          contractorView
+          onContractorUpdate={(id, status) => actions.openForm('updateJobStatus', { id, status, title: assigned.find((request) => request.id === id)?.title })}
+          onStatusUpdate={(id, status) => actions.openForm('updateJobStatus', { id, status, title: assigned.find((request) => request.id === id)?.title })}
+        />
       </div>
     );
   }
@@ -1121,54 +1177,116 @@ function MaintenancePage({ role, data, actions }: { role: Role; data: MvpData; a
           <ReportIssueList issues={filterForRole(data.reportIssues, role)} managerView actions={actions} />
         </Panel>
         <Panel title="Maintenance jobs">
-          <MaintenanceCards requests={filterForRole(data.maintenanceRequests, role)} compact onAssignContractor={actions.assignContractor} onStatusUpdate={actions.updateMaintenanceStatus} />
+          <MaintenanceCards
+            requests={filterForRole(data.maintenanceRequests, role)}
+            compact
+            onAssignContractor={(id) => actions.openForm('assignContractor', { id, title: data.maintenanceRequests.find((request) => request.id === id)?.title })}
+            onStatusUpdate={(id, status) => actions.openForm('updateJobStatus', { id, status, title: data.maintenanceRequests.find((request) => request.id === id)?.title })}
+          />
         </Panel>
       </div>
     </div>
   );
 }
 
-function FacilitiesPage({ role, data, actions }: { role: Role; data: MvpData; actions: FlowActions }) {
+function FacilitiesPage({ role, data, actions, buildingConfig }: { role: Role; data: MvpData; actions: FlowActions; buildingConfig: BuildingConfiguration }) {
   const records = role === 'resident' ? filterPrivateForRole(data.facilityBookings, role) : filterForRole(data.facilityBookings, role);
+  const facilities = activeFacilities(buildingConfig);
+  const residentCanBook = facilities.length > 0;
   return (
     <div className="space-y-6">
       <SectionHeader
         eyebrow="Facility Bookings"
-        title={role === 'resident' || role === 'committee' ? 'Book building facilities' : 'Facility approvals'}
-        action={(role === 'resident' || role === 'committee') ? <button className="btn-primary" onClick={actions.bookFacility}><Plus size={17} /> Book facility</button> : undefined}
+        title={role === 'resident' || role === 'committee' ? `${buildingConfig.profile.name} facilities` : 'Facility approvals'}
+        action={(role === 'resident' || role === 'committee') && residentCanBook ? <button className="btn-primary" onClick={() => actions.openForm('bookFacility')}><Plus size={17} /> Book facility</button> : undefined}
       />
+      {(role === 'resident' || role === 'committee') && (
+        facilities.length ? (
+          <div className="grid gap-4 lg:grid-cols-2">
+            {facilities.map((facility) => (
+              <article className="rounded-3xl border border-line bg-white p-5 shadow-soft" key={facility.id}>
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <h2 className="text-lg font-semibold">{facility.name}</h2>
+                    <p className="mt-1 text-sm text-slate-500">{facility.location} · Capacity {facility.capacity}</p>
+                  </div>
+                  <Badge label={facility.approvalRequired ? 'Approval required' : 'Instant'} />
+                </div>
+                <p className="mt-3 text-sm leading-6 text-slate-600">{facility.description}</p>
+                <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                  <MiniStat label="Availability" value={facility.availability} />
+                  <MiniStat label="Max length" value={facility.maxBookingLength} />
+                  <MiniStat label="Notice" value={facility.advanceNotice} />
+                  <MiniStat label="Visibility" value={facility.visibility} />
+                </div>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <EmptyState title="No facilities available for booking" copy="This building has no active resident-bookable facilities configured." />
+        )
+      )}
       <Panel title={role === 'manager' || role === 'portfolio_admin' ? 'Bookings awaiting review' : 'My bookings'}>
         <RecordTable records={records} />
       </Panel>
       {(role === 'manager' || role === 'portfolio_admin') && (
-        <div className="grid gap-4 lg:grid-cols-2">
-          {records.map((booking) => (
-            <article className="rounded-3xl border border-line bg-white p-5 shadow-soft" key={booking.id}>
-              <Badge label={booking.status} />
-              <h3 className="mt-3 font-semibold">{booking.title}</h3>
-              <p className="mt-1 text-sm text-slate-500">{buildingName(booking.buildingId)} · {booking.owner}</p>
-              <p className="mt-3 text-sm text-slate-600">{booking.meta}</p>
-              <div className="mt-4 flex flex-wrap gap-2">
-                <button className="btn-secondary" onClick={() => actions.updateFacilityBooking(booking.id, 'Approved')}>Approve</button>
-                <button className="btn-secondary" onClick={() => actions.updateFacilityBooking(booking.id, 'Closed')}>Decline</button>
-              </div>
-            </article>
-          ))}
+        <div className="grid gap-5 xl:grid-cols-[0.9fr_1.1fr]">
+          <Panel title={`${buildingConfig.profile.name} configured facilities`}>
+            <RecordTable records={buildingConfig.facilities.map((facility) => ({
+              id: facility.id,
+              title: facility.name,
+              buildingId: buildingConfig.buildingId,
+              owner: facility.location,
+              status: facility.status,
+              meta: `${facility.availability} · ${facility.visibility}`
+            }))} />
+          </Panel>
+          <div className="grid gap-4">
+            {records.map((booking) => (
+              <article className="rounded-3xl border border-line bg-white p-5 shadow-soft" key={booking.id}>
+                <Badge label={booking.status} />
+                <h3 className="mt-3 font-semibold">{booking.title}</h3>
+                <p className="mt-1 text-sm text-slate-500">{buildingName(booking.buildingId)} · {booking.owner}</p>
+                <p className="mt-3 text-sm text-slate-600">{booking.meta}</p>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <button className="btn-secondary" onClick={() => actions.updateFacilityBooking(booking.id, 'Approved')}>Approve</button>
+                  <button className="btn-secondary" onClick={() => actions.updateFacilityBooking(booking.id, 'Closed')}>Decline</button>
+                </div>
+              </article>
+            ))}
+          </div>
         </div>
       )}
     </div>
   );
 }
 
-function RenovationsPage({ role, data, actions }: { role: Role; data: MvpData; actions: FlowActions }) {
+function RenovationsPage({ role, data, actions, buildingConfig }: { role: Role; data: MvpData; actions: FlowActions; buildingConfig: BuildingConfiguration }) {
   const records = filterForRole(data.renovations, role);
+  const rules = activeRenovationRules(buildingConfig);
   return (
     <div className="space-y-6">
       <SectionHeader
         eyebrow="Renovation Approvals"
-        title={role === 'resident' || role === 'committee' ? 'Renovation requests' : 'Review renovation requests'}
-        action={(role === 'resident' || role === 'committee') ? <button className="btn-primary" onClick={actions.submitRenovation}><Plus size={17} /> Submit request</button> : undefined}
+        title={role === 'resident' || role === 'committee' ? `${buildingConfig.profile.name} renovation requests` : 'Review renovation requests'}
+        action={(role === 'resident' || role === 'committee') && rules.length ? <button className="btn-primary" onClick={() => actions.openForm('submitRenovation')}><Plus size={17} /> Submit request</button> : undefined}
       />
+      {(role === 'resident' || role === 'committee') && (
+        rules.length ? (
+          <Panel title="Available request types">
+            <RecordTable records={rules.map((rule) => ({
+              id: rule.id,
+              title: rule.type,
+              buildingId: buildingConfig.buildingId,
+              owner: rule.committeeReviewRequired ? 'Committee review' : 'Manager review',
+              status: rule.approvalPathway,
+              meta: `${rule.requiredDocuments.join(', ')} · ${rule.noiseRules}`
+            }))} />
+          </Panel>
+        ) : (
+          <EmptyState title="No renovation pathways configured" copy="This building has no resident renovation request types enabled." />
+        )
+      )}
       <div className="grid gap-4 lg:grid-cols-2">
         {records.map((renovation) => (
           <article className="rounded-3xl border border-line bg-white p-5 shadow-soft" key={renovation.id}>
@@ -1192,13 +1310,142 @@ function RenovationsPage({ role, data, actions }: { role: Role; data: MvpData; a
   );
 }
 
-function PackagesPage({ role, data }: { role: Role; data: MvpData }) {
+function PackagesPage({ role, data, buildingConfig }: { role: Role; data: MvpData; buildingConfig: BuildingConfiguration }) {
+  if (!buildingConfig.packageManagement.enabled) {
+    return (
+      <div className="mx-auto max-w-5xl space-y-6">
+        <SectionHeader eyebrow="Packages" title="Package management unavailable" />
+        <EmptyState title="No package collection for this building" copy={`${buildingConfig.profile.name} does not have concierge/package collection enabled.`} />
+      </div>
+    );
+  }
   const records = filterPrivateForRole(data.packages, role).filter((pkg) => pkg.status === 'Awaiting collection');
   return (
     <div className="mx-auto max-w-5xl space-y-6">
       <SectionHeader eyebrow="Packages" title="Package notifications" />
+      <Panel title="Collection rules">
+        <DetailRows rows={[
+          ['Collection location', buildingConfig.packageManagement.collectionLocation ?? 'Not configured'],
+          ['Collection hours', buildingConfig.packageManagement.collectionHours ?? 'Not configured'],
+          ['ID required', buildingConfig.packageManagement.idRequired ? 'Yes' : 'No'],
+          ['Notifications', buildingConfig.packageManagement.notificationRules ?? 'In-app']
+        ]} />
+      </Panel>
       <Panel title="Awaiting collection">
         <RecordTable records={records} />
+      </Panel>
+    </div>
+  );
+}
+
+function CompliancePage({ role, buildingConfig }: { role: Role; buildingConfig: BuildingConfiguration }) {
+  const requirements = buildingConfig.compliance.filter((item) => item.enabled);
+  return (
+    <div className="space-y-6">
+      <SectionHeader eyebrow="Compliance" title={`${buildingConfig.profile.name} compliance requirements`} action={<span className="pill bg-blue-50 text-blue-700 ring-blue-200">Configured per building</span>} />
+      <Panel title="Active requirements">
+        <RecordTable records={requirements.map((item) => ({
+          id: item.id,
+          title: item.category,
+          buildingId: buildingConfig.buildingId,
+          owner: item.responsible,
+          status: 'Open',
+          meta: `${item.frequency} schedule`
+        }))} />
+      </Panel>
+      {(role === 'manager' || role === 'portfolio_admin') && (
+        <Panel title="Linked assets">
+          <RecordTable records={buildingConfig.assets.map(assetToRecord)} />
+        </Panel>
+      )}
+    </div>
+  );
+}
+
+function BuildingSettingsPage({ buildingConfig }: { buildingConfig: BuildingConfiguration }) {
+  const tabs = ['Profile', 'Facilities', 'Contacts / Directory', 'Issue Categories', 'Renovation Rules', 'Package Management', 'Compliance Items', 'Assets', 'Resident Permissions', 'Notification Rules'] as const;
+  const [activeTab, setActiveTab] = useState<typeof tabs[number]>('Profile');
+
+  const recordsByTab: Record<typeof activeTab, SimpleRecord[]> = {
+    Profile: [{
+      id: `${buildingConfig.buildingId}-profile`,
+      title: buildingConfig.profile.name,
+      buildingId: buildingConfig.buildingId,
+      owner: buildingConfig.profile.buildingType,
+      status: 'Configured',
+      meta: buildingConfig.profile.notes
+    }],
+    Facilities: buildingConfig.facilities.map((facility) => ({
+      id: facility.id,
+      title: facility.name,
+      buildingId: buildingConfig.buildingId,
+      owner: facility.location,
+      status: facility.status,
+      meta: `${facility.availability} · ${facility.maxBookingLength} · ${facility.visibility}`
+    })),
+    'Contacts / Directory': buildingConfig.contacts.map((contact) => contactToRecord(contact, buildingConfig.buildingId)),
+    'Issue Categories': buildingConfig.issueCategories.map((category) => ({
+      id: category.id,
+      title: category.label,
+      buildingId: buildingConfig.buildingId,
+      owner: category.defaultContractorId ?? 'No default contractor',
+      status: category.enabled ? 'Enabled' : 'Disabled',
+      priority: category.defaultPriority,
+      meta: `Default priority: ${category.defaultPriority}`
+    })),
+    'Renovation Rules': buildingConfig.renovationRules.map((rule) => ({
+      id: rule.id,
+      title: rule.type,
+      buildingId: buildingConfig.buildingId,
+      owner: rule.committeeReviewRequired ? 'Committee review' : 'Manager review',
+      status: rule.enabled ? 'Enabled' : 'Disabled',
+      meta: `${rule.approvalPathway} · ${rule.requiredDocuments.join(', ')}`
+    })),
+    'Package Management': [{
+      id: `${buildingConfig.buildingId}-packages`,
+      title: buildingConfig.packageManagement.enabled ? 'Package collection enabled' : 'Package collection disabled',
+      buildingId: buildingConfig.buildingId,
+      owner: buildingConfig.packageManagement.collectionLocation ?? 'No concierge',
+      status: buildingConfig.packageManagement.enabled ? 'Enabled' : 'Disabled',
+      meta: buildingConfig.packageManagement.enabled ? `${buildingConfig.packageManagement.collectionHours} · ID ${buildingConfig.packageManagement.idRequired ? 'required' : 'not required'}` : 'Residents will not see package collection.'
+    }],
+    'Compliance Items': buildingConfig.compliance.map((item) => ({
+      id: item.id,
+      title: item.category,
+      buildingId: buildingConfig.buildingId,
+      owner: item.responsible,
+      status: item.enabled ? 'Enabled' : 'Disabled',
+      meta: item.frequency
+    })),
+    Assets: buildingConfig.assets.map(assetToRecord),
+    'Resident Permissions': [
+      { id: `${buildingConfig.buildingId}-levies`, title: 'Levy visibility', buildingId: buildingConfig.buildingId, owner: 'Residents', status: buildingConfig.residentPermissions.leviesVisibleTo, meta: 'Controls My Levies navigation.' },
+      { id: `${buildingConfig.buildingId}-feed`, title: 'Resident feed posting', buildingId: buildingConfig.buildingId, owner: 'Residents', status: buildingConfig.residentPermissions.residentsCanPostFeed ? 'Enabled' : 'Disabled', meta: 'Controls resident-created feed posts.' },
+      { id: `${buildingConfig.buildingId}-facilities`, title: 'Tenant facility bookings', buildingId: buildingConfig.buildingId, owner: 'Tenants', status: buildingConfig.residentPermissions.tenantsCanBookFacilities ? 'Enabled' : 'Disabled', meta: 'Controls tenant booking access.' },
+      { id: `${buildingConfig.buildingId}-committee-docs`, title: 'Committee documents', buildingId: buildingConfig.buildingId, owner: 'Committee', status: buildingConfig.residentPermissions.committeeDocumentsVisible ? 'Visible' : 'Restricted', meta: 'Controls committee-only document visibility.' }
+    ],
+    'Notification Rules': buildingConfig.notificationRules.map((rule, index) => ({
+      id: `${buildingConfig.buildingId}-notification-${index}`,
+      title: rule,
+      buildingId: buildingConfig.buildingId,
+      owner: 'Notification rules',
+      status: 'Enabled',
+      meta: 'In-app and email only for MVP'
+    }))
+  };
+
+  return (
+    <div className="space-y-6">
+      <SectionHeader eyebrow="Building Settings" title={`${buildingConfig.profile.name} configuration`} action={<span className="pill bg-slate-100 text-slate-700 ring-slate-200">Resident experience source of truth</span>} />
+      <Panel title="Configuration areas">
+        <div className="mb-5 flex flex-wrap gap-2">
+          {tabs.map((tab) => (
+            <button key={tab} className={`tab-button ${activeTab === tab ? 'tab-button-active' : ''}`} onClick={() => setActiveTab(tab)}>
+              {tab}
+            </button>
+          ))}
+        </div>
+        <RecordTable records={recordsByTab[activeTab]} />
       </Panel>
     </div>
   );
@@ -1221,7 +1468,7 @@ function IncidentsPage({ role, data, actions }: { role: Role; data: MvpData; act
             <p className="mt-3 text-sm text-slate-600">{incident.meta}</p>
             <div className="mt-4 flex flex-wrap gap-2">
               <button className="btn-secondary" onClick={() => actions.recordIncidentUpdate(incident.id)}>Add manager note</button>
-              <button className="btn-secondary" onClick={() => actions.updateMaintenanceStatus('mr1', 'Assigned')}>Link work order</button>
+              <button className="btn-secondary" onClick={() => actions.openForm('updateJobStatus', { id: 'mr-demo-contractor', status: 'Assigned', title: 'Linked work order' })}>Link work order</button>
             </div>
           </article>
         ))}
@@ -1242,7 +1489,7 @@ function MotionsPage({ role, data, actions }: { role: Role; data: MvpData; actio
             <h3 className="mt-3 font-semibold">{motion.title}</h3>
             <p className="mt-1 text-sm text-slate-500">{buildingName(motion.buildingId)} · {motion.meta}</p>
             <div className="mt-4 flex flex-wrap gap-2">
-              <button className="btn-secondary" onClick={actions.vote}>Vote yes</button>
+              <button className="btn-secondary" onClick={() => actions.openForm('voteMotion', { id: motion.id, title: motion.title })}>Vote</button>
               <ComingSoonButton label="Abstain" />
             </div>
           </article>
@@ -1296,7 +1543,10 @@ function NoticeCard({ notice }: { notice: Notice }) {
   return (
     <article className="rounded-3xl border border-line bg-white p-5">
       <div className="flex items-center justify-between gap-3">
-        <Badge label={notice.priority} tone={notice.priority} />
+        <div className="flex flex-wrap gap-2">
+          <Badge label={notice.priority} tone={notice.priority} />
+          <span className={`pill ${isNewRecord(notice) ? 'bg-blue-50 text-blue-700 ring-blue-200' : 'bg-slate-100 text-slate-600 ring-slate-200'}`}>{isNewRecord(notice) ? 'New' : 'Demo'}</span>
+        </div>
         <span className="text-xs text-slate-500">{notice.reads} reads</span>
       </div>
       <h2 className="mt-4 text-lg font-semibold">{notice.title}</h2>
@@ -1319,13 +1569,195 @@ function NotificationRules() {
   );
 }
 
+function WorkflowModal({
+  activeForm,
+  role,
+  data,
+  buildingConfig,
+  onClose,
+  onSubmit
+}: {
+  activeForm: ActiveForm | null;
+  role: Role;
+  data: MvpData;
+  buildingConfig: BuildingConfiguration;
+  onClose: () => void;
+  onSubmit: (payload: Record<string, string>, context?: FormContext) => Promise<void>;
+}) {
+  const [values, setValues] = useState<Record<string, string>>({});
+
+  if (!activeForm) return null;
+
+  const currentForm = activeForm;
+  const config = formConfig(activeForm.kind, role, activeForm.context, data, buildingConfig);
+  const formValues = { ...config.defaults, ...values };
+
+  function updateValue(name: string, value: string) {
+    setValues((current) => ({ ...current, [name]: value }));
+  }
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await onSubmit(formValues, currentForm.context);
+    setValues({});
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/45 px-4 py-6">
+      <form className="max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-3xl border border-line bg-white p-6 shadow-2xl" onSubmit={submit}>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-sm font-semibold uppercase tracking-wide text-harbour">Testing workflow</p>
+            <h2 className="mt-2 text-2xl font-semibold">{config.title}</h2>
+            <p className="mt-2 text-sm text-slate-500">{config.copy}</p>
+          </div>
+          <button type="button" className="icon-button" onClick={onClose} aria-label="Close form">
+            <X size={18} />
+          </button>
+        </div>
+        <div className="mt-6 grid gap-4">
+          {config.fields.map((field) => (
+            <label key={field.name}>
+              <span className="text-sm font-medium text-slate-600">{field.label}</span>
+              {field.type === 'textarea' ? (
+                <textarea className="mt-2 min-h-28 w-full rounded-2xl border border-line px-4 py-3 outline-none focus:border-harbour" value={formValues[field.name] ?? ''} onChange={(event) => updateValue(field.name, event.target.value)} required={field.required} />
+              ) : field.options ? (
+                <select className="mt-2 w-full rounded-2xl border border-line px-4 py-3 outline-none focus:border-harbour" value={formValues[field.name] ?? field.options[0]} onChange={(event) => updateValue(field.name, event.target.value)} required={field.required}>
+                  {field.options.map((option) => <option key={option} value={option}>{option}</option>)}
+                </select>
+              ) : (
+                <input className="mt-2 w-full rounded-2xl border border-line px-4 py-3 outline-none focus:border-harbour" value={formValues[field.name] ?? ''} onChange={(event) => updateValue(field.name, event.target.value)} required={field.required} />
+              )}
+            </label>
+          ))}
+        </div>
+        <div className="mt-6 flex flex-wrap justify-end gap-3">
+          <button type="button" className="btn-secondary" onClick={onClose}>Cancel</button>
+          <button type="submit" className="btn-primary">{config.submitLabel}</button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+type FormField = {
+  name: string;
+  label: string;
+  type?: 'text' | 'textarea';
+  required?: boolean;
+  options?: string[];
+};
+
+function formConfig(kind: FormKind, role: Role, context: FormContext | undefined, data: MvpData, buildingConfig: BuildingConfiguration): { title: string; copy: string; submitLabel: string; defaults: Record<string, string>; fields: FormField[] } {
+  const firstJob = data.maintenanceRequests.find((request) => request.id === context?.id);
+  const recordTitle = context?.title ?? firstJob?.title ?? 'Selected record';
+  const issueOptions = enabledIssueCategories(buildingConfig).map((category) => category.label);
+  const facilityOptions = activeFacilities(buildingConfig).map((facility) => facility.name);
+  const renovationOptions = activeRenovationRules(buildingConfig).map((rule) => rule.type);
+  const configs: Record<FormKind, { title: string; copy: string; submitLabel: string; defaults: Record<string, string>; fields: FormField[] }> = {
+    sendMessage: {
+      title: role === 'manager' ? 'Reply to resident' : 'Send message',
+      copy: 'Creates a visible resident-manager thread record for the other role.',
+      submitLabel: 'Send message',
+      defaults: { title: role === 'manager' ? 'Manager reply to resident' : 'Question for building manager', body: '' },
+      fields: [{ name: 'title', label: 'Subject', required: true }, { name: 'body', label: 'Message', type: 'textarea', required: true }]
+    },
+    createNotice: {
+      title: 'Create notice',
+      copy: 'Creates a notice that appears immediately in the resident Communications Hub.',
+      submitLabel: 'Create notice',
+      defaults: { title: 'Lift maintenance update', category: 'Maintenance update', priority: 'Medium', audience: 'All residents', body: '' },
+      fields: [
+        { name: 'title', label: 'Notice title', required: true },
+        { name: 'category', label: 'Category', options: ['Announcement', 'Maintenance update', 'Water shutdown', 'Lift outage', 'Emergency alert'], required: true },
+        { name: 'priority', label: 'Priority', options: ['Low', 'Medium', 'High', 'Emergency'], required: true },
+        { name: 'audience', label: 'Audience', options: ['All residents', 'Owners only', 'Tenants only', 'Committee only'], required: true },
+        { name: 'body', label: 'Notice body', type: 'textarea', required: true }
+      ]
+    },
+    uploadDocument: {
+      title: 'Upload document',
+      copy: 'Adds a document record visible to residents when visibility is set to Visible.',
+      submitLabel: 'Add document',
+      defaults: { title: 'Building update document', category: 'Building documents', visibility: 'Visible' },
+      fields: [
+        { name: 'title', label: 'Document title', required: true },
+        { name: 'category', label: 'Category', options: ['By-laws', 'Minutes', 'Levy notices', 'Insurance', 'Building documents'], required: true },
+        { name: 'visibility', label: 'Visibility', options: ['Visible', 'Committee only'], required: true }
+      ]
+    },
+    reportIssue: {
+      title: 'Report issue',
+      copy: 'Creates a resident issue and matching maintenance request for manager triage.',
+      submitLabel: 'Submit issue',
+      defaults: { title: `${issueOptions[0] ?? 'Building'} issue`, category: issueOptions[0] ?? 'Other', severity: enabledIssueCategories(buildingConfig)[0]?.defaultPriority ?? 'Medium', description: '' },
+      fields: [
+        { name: 'title', label: 'Issue title', required: true },
+        { name: 'category', label: 'Category', options: issueOptions.length ? issueOptions : ['Other'], required: true },
+        { name: 'severity', label: 'Severity', options: ['Low', 'Medium', 'High', 'Emergency'], required: true },
+        { name: 'description', label: 'Description', type: 'textarea', required: true }
+      ]
+    },
+    bookFacility: {
+      title: 'Book facility',
+      copy: 'Creates a booking request visible in the manager Facilities queue.',
+      submitLabel: 'Request booking',
+      defaults: { title: facilityOptions[0] ?? 'Facility booking', date: '2026-06-18', notes: '' },
+      fields: [
+        { name: 'title', label: 'Facility', options: facilityOptions.length ? facilityOptions : ['No active facilities configured'], required: true },
+        { name: 'date', label: 'Requested date', required: true },
+        { name: 'notes', label: 'Notes', type: 'textarea' }
+      ]
+    },
+    submitRenovation: {
+      title: 'Submit renovation request',
+      copy: 'Creates a renovation approval request visible to managers.',
+      submitLabel: 'Submit request',
+      defaults: { title: renovationOptions[0] ?? 'Apartment renovation request', date: '2026-06-21', scope: '' },
+      fields: [
+        { name: 'title', label: 'Request type', options: renovationOptions.length ? renovationOptions : ['Other'], required: true },
+        { name: 'date', label: 'Proposed start date', required: true },
+        { name: 'scope', label: 'Scope and contractor details', type: 'textarea', required: true }
+      ]
+    },
+    assignContractor: {
+      title: 'Assign contractor',
+      copy: `Assigns LiftCare NSW to ${recordTitle} and makes the job visible in the contractor portal.`,
+      submitLabel: 'Assign contractor',
+      defaults: { contractor: 'LiftCare NSW', note: '' },
+      fields: [{ name: 'contractor', label: 'Contractor', options: ['LiftCare NSW'], required: true }, { name: 'note', label: 'Assignment note', type: 'textarea' }]
+    },
+    updateJobStatus: {
+      title: 'Update job status',
+      copy: `Updates ${recordTitle} and posts a visible progress message.`,
+      submitLabel: 'Save update',
+      defaults: { status: context?.status ?? 'In Progress', note: '' },
+      fields: [
+        { name: 'status', label: 'Status', options: ['Under Review', 'Assigned', 'Scheduled', 'In Progress', 'Completed', 'Closed'], required: true },
+        { name: 'note', label: 'Progress note', type: 'textarea', required: true }
+      ]
+    },
+    voteMotion: {
+      title: 'Vote on motion',
+      copy: `Records your vote on ${recordTitle}.`,
+      submitLabel: 'Record vote',
+      defaults: { vote: 'Yes', comment: '' },
+      fields: [{ name: 'vote', label: 'Vote', options: ['Yes', 'No', 'Abstain'], required: true }, { name: 'comment', label: 'Comment', type: 'textarea' }]
+    }
+  };
+  return configs[kind];
+}
+
 function ReportIssueList({ issues, managerView = false, actions }: { issues: ReportIssue[]; managerView?: boolean; actions?: FlowActions }) {
   return (
     <div className="space-y-3">
       {issues.map((issue) => (
         <article className="rounded-2xl border border-line p-4" key={issue.id}>
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <Badge label={issue.severity} tone={issue.severity} />
+            <div className="flex flex-wrap gap-2">
+              <Badge label={issue.severity} tone={issue.severity} />
+              <span className={`pill ${isNewRecord(issue) ? 'bg-blue-50 text-blue-700 ring-blue-200' : 'bg-slate-100 text-slate-600 ring-slate-200'}`}>{isNewRecord(issue) ? 'New' : 'Demo'}</span>
+            </div>
             <Badge label={issue.status} />
           </div>
           <h3 className="mt-3 font-semibold">{issue.title}</h3>
@@ -1334,7 +1766,7 @@ function ReportIssueList({ issues, managerView = false, actions }: { issues: Rep
           {managerView && (
             <div className="mt-4 flex flex-wrap gap-2">
               <button className="btn-secondary" onClick={() => actions?.updateIssueStatus(issue.id, 'Under Review')}>Triage</button>
-              <button className="btn-secondary" onClick={() => actions?.assignContractor()}>Assign contractor</button>
+              <button className="btn-secondary" onClick={() => actions?.openForm('assignContractor', { id: issue.id, title: issue.title })}>Assign contractor</button>
               <button className="btn-secondary" onClick={() => actions?.notifyResident(issue.id)}>Notify resident</button>
             </div>
           )}
@@ -1366,25 +1798,21 @@ function ComingSoonButton({ label, icon, primary = false }: { label: string; ico
   );
 }
 
-function DirectoryPanel({ directory, className = '' }: { directory: BuildingDirectory; className?: string }) {
+function DirectoryPanel({ buildingConfig, role, className = '' }: { buildingConfig: BuildingConfiguration; role: Role; className?: string }) {
+  const contacts = visibleContacts(buildingConfig, role);
   return (
-    <Panel title={`${buildingName(directory.buildingId)} contacts`} className={className}>
-      <DetailRows rows={[
-        ['Strata manager', directory.strataManager],
-        ['Building manager', directory.buildingManager],
-        ['Concierge', directory.concierge],
-        ['Emergency', directory.emergencyContact],
-        ['After hours', directory.afterHoursContact],
-        ['Company phone', directory.companyPhone],
-        ['Company email', directory.companyEmail]
-      ]} />
+    <Panel title={`${buildingConfig.profile.name} contacts`} className={className}>
+      {contacts.length ? (
+        <DetailRows rows={contacts.map((contact) => [contact.type, `${contact.name} · ${contact.detail}`])} />
+      ) : (
+        <EmptyState title="No contacts configured" copy="Contacts are managed per building by the strata manager." />
+      )}
     </Panel>
   );
 }
 
 function WorkOrdersPage({ role }: { role: Role }) {
-  const records = filterForRole(maintenanceRequests, role).map(maintenanceToRecord);
-  return <ModulePage title="Work Orders" eyebrow="Assign contractors, approve quotes, track progress and close jobs" records={records} cta="Create work order" />;
+  return <ModulePage title="Work Orders" eyebrow="Assign contractors, approve quotes, track progress and close jobs" records={[]} cta="Create work order" />;
 }
 
 function ProjectsPage({ role }: { role: Role }) {
@@ -1441,7 +1869,10 @@ function MaintenanceCards({ requests, contractorView = false, compact = false, o
       {requests.map((request) => (
         <article className="rounded-3xl border border-line bg-white p-5 shadow-soft" key={request.id}>
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <Badge label={request.priority} tone={request.priority} />
+            <div className="flex flex-wrap gap-2">
+              <Badge label={request.priority} tone={request.priority} />
+              <span className={`pill ${isNewRecord(request) ? 'bg-blue-50 text-blue-700 ring-blue-200' : 'bg-slate-100 text-slate-600 ring-slate-200'}`}>{isNewRecord(request) ? 'New' : 'Demo'}</span>
+            </div>
             <Badge label={request.overdue ? 'Overdue' : request.status} />
           </div>
           <h2 className="mt-4 text-lg font-semibold">{request.title}</h2>
@@ -1476,32 +1907,56 @@ function MaintenanceCards({ requests, contractorView = false, compact = false, o
 }
 
 function RecordTable({ records }: { records: SimpleRecord[] }) {
+  const [filter, setFilter] = useState<'All' | 'New' | 'Demo' | 'My Created Items'>('All');
+  const filteredRecords = records.filter((record) => {
+    if (filter === 'New') return isNewRecord(record);
+    if (filter === 'Demo') return !isNewRecord(record);
+    if (filter === 'My Created Items') return isNewRecord(record) || record.meta?.includes('Created in testing mode') || record.meta?.includes('Uploaded in testing mode');
+    return true;
+  });
+
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full min-w-[760px] text-left text-sm">
-        <thead>
-          <tr className="border-b border-line text-xs uppercase tracking-wide text-slate-500">
-            <th className="py-3 pr-4 font-semibold">Item</th>
-            <th className="py-3 pr-4 font-semibold">Building</th>
-            <th className="py-3 pr-4 font-semibold">Owner</th>
-            <th className="py-3 pr-4 font-semibold">Status</th>
-            <th className="py-3 pr-4 font-semibold">Due</th>
-            <th className="py-3 pr-4 font-semibold">Context</th>
-          </tr>
-        </thead>
-        <tbody>
-          {records.map((record) => (
-            <tr className="border-b border-line last:border-0" key={record.id}>
-              <td className="py-4 pr-4 font-medium">{record.title}</td>
-              <td className="py-4 pr-4 text-slate-600">{buildingName(record.buildingId)}</td>
-              <td className="py-4 pr-4 text-slate-600">{record.owner}</td>
-              <td className="py-4 pr-4"><Badge label={record.status} tone={record.priority} /></td>
-              <td className="py-4 pr-4 text-slate-600">{record.due ?? 'Not set'}</td>
-              <td className="py-4 pr-4 text-slate-600">{record.amount ? currency(record.amount) : record.meta}</td>
+    <div>
+      <div className="mb-4 flex flex-wrap gap-2">
+        {(['All', 'New', 'Demo', 'My Created Items'] as const).map((option) => (
+          <button key={option} className={`tab-button ${filter === option ? 'tab-button-active' : ''}`} onClick={() => setFilter(option)}>
+            {option}
+          </button>
+        ))}
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[760px] text-left text-sm">
+          <thead>
+            <tr className="border-b border-line text-xs uppercase tracking-wide text-slate-500">
+              <th className="py-3 pr-4 font-semibold">Item</th>
+              <th className="py-3 pr-4 font-semibold">Building</th>
+              <th className="py-3 pr-4 font-semibold">Owner</th>
+              <th className="py-3 pr-4 font-semibold">Status</th>
+              <th className="py-3 pr-4 font-semibold">Due</th>
+              <th className="py-3 pr-4 font-semibold">Context</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {filteredRecords.map((record) => (
+              <tr className="border-b border-line last:border-0" key={record.id}>
+                <td className="py-4 pr-4 font-medium">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span>{record.title}</span>
+                    <span className={`pill ${isNewRecord(record) ? 'bg-blue-50 text-blue-700 ring-blue-200' : 'bg-slate-100 text-slate-600 ring-slate-200'}`}>
+                      {isNewRecord(record) ? 'New' : 'Demo'}
+                    </span>
+                  </div>
+                </td>
+                <td className="py-4 pr-4 text-slate-600">{buildingName(record.buildingId)}</td>
+                <td className="py-4 pr-4 text-slate-600">{record.owner}</td>
+                <td className="py-4 pr-4"><Badge label={record.status} tone={record.priority} /></td>
+                <td className="py-4 pr-4 text-slate-600">{record.due ?? 'Not set'}</td>
+                <td className="py-4 pr-4 text-slate-600">{record.amount ? currency(record.amount) : record.meta}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
@@ -1601,6 +2056,52 @@ function DetailRows({ rows }: { rows: [string, string][] }) {
       ))}
     </div>
   );
+}
+
+function resolveBuildingConfig(data: MvpData, buildingId: string) {
+  return data.buildingConfigurations.find((config) => config.buildingId === buildingId) ?? getBuildingConfig(buildingId);
+}
+
+function activeFacilities(config: BuildingConfiguration) {
+  return config.facilities.filter((facility) => facility.status === 'active');
+}
+
+function enabledIssueCategories(config: BuildingConfiguration) {
+  return config.issueCategories.filter((category) => category.enabled);
+}
+
+function activeRenovationRules(config: BuildingConfiguration) {
+  return config.renovationRules.filter((rule) => rule.enabled);
+}
+
+function visibleContacts(config: BuildingConfiguration, role: Role) {
+  return config.contacts.filter((contact) => {
+    if (role === 'manager' || role === 'portfolio_admin' || role === 'super_admin') return true;
+    if (role === 'committee') return contact.visibility !== 'managers only';
+    return contact.visibility === 'all residents';
+  });
+}
+
+function contactToRecord(contact: BuildingContact, buildingId: string): SimpleRecord {
+  return {
+    id: contact.id,
+    title: contact.type,
+    buildingId,
+    owner: contact.name,
+    status: contact.visibility,
+    meta: contact.detail
+  };
+}
+
+function assetToRecord(asset: BuildingConfiguration['assets'][number]): SimpleRecord {
+  return {
+    id: asset.id,
+    title: asset.name,
+    buildingId: asset.id.split('-')[0],
+    owner: asset.contractorId ?? 'Internal',
+    status: 'Open',
+    meta: `${asset.type} · ${asset.location} · ${asset.serviceFrequency}`
+  };
 }
 
 function noticeToRecord(notice: Notice): SimpleRecord {
@@ -1748,63 +2249,15 @@ function cleanActionMessage(message: string) {
     .replace('Using local seeded test account. Configure Supabase env vars to use Supabase Auth.', 'Workspace ready. Use Switch Role to test each Atlas experience.');
 }
 
+function isNewRecord(record: { id: string; meta?: string; due?: string }) {
+  if (record.id.startsWith('new-') || record.meta?.startsWith('New')) return true;
+  if (!record.due) return false;
+  const createdAt = new Date(record.due).getTime();
+  return Number.isFinite(createdAt) && Date.now() - createdAt < 24 * 60 * 60 * 1000;
+}
+
 function todayLabel() {
-  return '2026-06-05';
-}
-
-function nextId(prefix: string) {
-  return `${prefix}-${Date.now()}`;
-}
-
-function makeReportIssue(payload?: Partial<ReportIssue>): ReportIssue {
-  const category = payload?.category ?? 'Maintenance';
-  const severity = payload?.severity ?? (category === 'Safety' ? 'High' : 'Medium');
-  return {
-    id: nextId('ri'),
-    title: payload?.title ?? `${category} issue reported`,
-    category,
-    severity,
-    buildingId: 'b1',
-    unit: '1A',
-    resident: 'Sienna Nguyen',
-    outcome: category === 'Maintenance' ? 'Maintenance request' : category === 'Damage' || category === 'Safety' ? 'Maintenance request + incident' : 'Incident',
-    status: 'Triage',
-    submitted: todayLabel()
-  };
-}
-
-function issueToMaintenance(issue: ReportIssue): MaintenanceRequest {
-  return {
-    id: nextId('mr'),
-    title: issue.title,
-    category: issue.category,
-    buildingId: issue.buildingId,
-    unit: issue.unit,
-    resident: issue.resident,
-    priority: issue.severity,
-    status: 'Submitted',
-    submitted: issue.submitted,
-    slaHours: issue.severity === 'Emergency' ? 4 : issue.severity === 'High' ? 12 : 48,
-    overdue: false,
-    access: 'Resident appointment required'
-  };
-}
-
-function appendActivity(data: MvpData, title: string, meta: string, prefix: string): MvpData {
-  const record = {
-    id: nextId(prefix),
-    title,
-    buildingId: 'b1',
-    owner: 'System',
-    status: 'Recorded',
-    due: todayLabel(),
-    meta
-  };
-  return {
-    ...data,
-    notifications: [{ ...record, status: 'Unread', meta: 'In-app' }, ...data.notifications],
-    auditLogs: [record, ...data.auditLogs]
-  };
+  return '2026-06-06';
 }
 
 function HammerIcon(props: ComponentProps<typeof AlertTriangle>) {

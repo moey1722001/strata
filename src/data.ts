@@ -103,10 +103,103 @@ export type BuildingDirectory = {
   companyEmail: string;
 };
 
+export type BuildingFacility = {
+  id: string;
+  name: string;
+  description: string;
+  location: string;
+  availability: string;
+  maxBookingLength: string;
+  advanceNotice: string;
+  approvalRequired: boolean;
+  feePlaceholder: string;
+  capacity: number;
+  rules: string;
+  visibility: 'all residents' | 'owners only' | 'tenants allowed' | 'committee only';
+  status: 'active' | 'inactive';
+};
+
+export type BuildingContact = {
+  id: string;
+  type: string;
+  name: string;
+  detail: string;
+  visibility: 'all residents' | 'committee only' | 'managers only';
+};
+
+export type BuildingIssueCategory = {
+  id: string;
+  label: string;
+  enabled: boolean;
+  defaultPriority: Priority;
+  defaultContractorId?: string;
+};
+
+export type BuildingRenovationRule = {
+  id: string;
+  type: string;
+  enabled: boolean;
+  requiredDocuments: string[];
+  acknowledgements: string[];
+  approvalPathway: string;
+  committeeReviewRequired: boolean;
+  noiseRules: string;
+};
+
+export type BuildingPackageSettings = {
+  enabled: boolean;
+  collectionLocation?: string;
+  collectionHours?: string;
+  idRequired?: boolean;
+  notificationRules?: string;
+};
+
+export type BuildingComplianceRequirement = {
+  id: string;
+  category: string;
+  enabled: boolean;
+  frequency: string;
+  responsible: string;
+};
+
+export type BuildingAssetConfig = {
+  id: string;
+  name: string;
+  type: string;
+  location: string;
+  serviceFrequency: string;
+  contractorId?: string;
+};
+
+export type BuildingResidentPermissions = {
+  leviesVisibleTo: 'owners only' | 'owners and tenants';
+  residentsCanPostFeed: boolean;
+  tenantsCanBookFacilities: boolean;
+  committeeDocumentsVisible: boolean;
+};
+
+export type BuildingConfiguration = {
+  buildingId: string;
+  profile: {
+    name: string;
+    buildingType: string;
+    notes: string;
+  };
+  facilities: BuildingFacility[];
+  contacts: BuildingContact[];
+  issueCategories: BuildingIssueCategory[];
+  renovationRules: BuildingRenovationRule[];
+  packageManagement: BuildingPackageSettings;
+  compliance: BuildingComplianceRequirement[];
+  assets: BuildingAssetConfig[];
+  residentPermissions: BuildingResidentPermissions;
+  notificationRules: string[];
+};
+
 export type ReportIssue = {
   id: string;
   title: string;
-  category: 'Maintenance' | 'Damage' | 'Security' | 'Noise' | 'Safety' | 'Other';
+  category: 'Maintenance' | 'Damage' | 'Security' | 'Noise' | 'Safety' | 'Other' | 'Water leak' | 'Lift issue' | 'Electrical' | 'Plumbing' | 'Cleaning' | 'Parking' | 'Common area damage' | 'Fire safety';
   severity: Priority;
   buildingId: string;
   unit: string;
@@ -200,6 +293,7 @@ export type PageId =
   | 'projects'
   | 'incidents'
   | 'compliance'
+  | 'building_settings'
   | 'documents'
   | 'facilities'
   | 'renovations'
@@ -338,6 +432,122 @@ export const buildings: Building[] = [
     profit: 12
   }
 ];
+
+const defaultIssueCategories: BuildingIssueCategory[] = [
+  { id: 'water-leak', label: 'Water leak', enabled: true, defaultPriority: 'High', defaultContractorId: 'c1' },
+  { id: 'lift-issue', label: 'Lift issue', enabled: true, defaultPriority: 'High', defaultContractorId: 'c3' },
+  { id: 'electrical', label: 'Electrical', enabled: true, defaultPriority: 'Medium', defaultContractorId: 'c2' },
+  { id: 'plumbing', label: 'Plumbing', enabled: true, defaultPriority: 'High', defaultContractorId: 'c1' },
+  { id: 'security', label: 'Security', enabled: true, defaultPriority: 'Medium', defaultContractorId: 'c6' },
+  { id: 'noise', label: 'Noise', enabled: true, defaultPriority: 'Medium' },
+  { id: 'cleaning', label: 'Cleaning', enabled: true, defaultPriority: 'Low' },
+  { id: 'parking', label: 'Parking', enabled: true, defaultPriority: 'Low' },
+  { id: 'common-damage', label: 'Common area damage', enabled: true, defaultPriority: 'Medium' },
+  { id: 'fire-safety', label: 'Fire safety', enabled: true, defaultPriority: 'Emergency', defaultContractorId: 'c4' },
+  { id: 'other', label: 'Other', enabled: true, defaultPriority: 'Medium' }
+];
+
+const defaultRenovationRules: BuildingRenovationRule[] = [
+  { id: 'bathroom', type: 'Bathroom renovation', enabled: true, requiredDocuments: ['Scope of works', 'Waterproofing certificate', 'Contractor insurance'], acknowledgements: ['By-law acknowledgement', 'Noise rules'], approvalPathway: 'Manager then committee', committeeReviewRequired: true, noiseRules: 'No noisy works outside approved hours.' },
+  { id: 'kitchen', type: 'Kitchen renovation', enabled: true, requiredDocuments: ['Plans', 'Contractor insurance'], acknowledgements: ['By-law acknowledgement'], approvalPathway: 'Manager review', committeeReviewRequired: false, noiseRules: 'Noisy works weekdays only.' },
+  { id: 'flooring', type: 'Flooring', enabled: true, requiredDocuments: ['Acoustic certificate', 'Product specification'], acknowledgements: ['Acoustic by-law acknowledgement'], approvalPathway: 'Committee review', committeeReviewRequired: true, noiseRules: 'Acoustic underlay required.' },
+  { id: 'ev-charger', type: 'EV charger', enabled: true, requiredDocuments: ['Electrical plan', 'Licensed electrician details'], acknowledgements: ['Common property alteration acknowledgement'], approvalPathway: 'Committee review', committeeReviewRequired: true, noiseRules: 'Electrical isolation notice may be required.' },
+  { id: 'other-reno', type: 'Other', enabled: true, requiredDocuments: ['Scope of works'], acknowledgements: ['By-law acknowledgement'], approvalPathway: 'Manager review', committeeReviewRequired: false, noiseRules: 'Standard strata noise rules apply.' }
+];
+
+export const buildingConfigurations: BuildingConfiguration[] = [
+  {
+    buildingId: 'b1',
+    profile: { name: 'Harbourline Residences', buildingType: 'High-rise residential with concierge', notes: 'Lifts, rooftop, BBQ and package collection enabled.' },
+    facilities: [
+      { id: 'b1-bbq', name: 'BBQ area', description: 'Resident BBQ area with harbour outlook.', location: 'Level 8 rooftop', availability: 'Mon-Sun 8am-9pm', maxBookingLength: '3 hours', advanceNotice: '24 hours', approvalRequired: true, feePlaceholder: '$150 deposit placeholder', capacity: 20, rules: 'Clean area after use. No glass on rooftop.', visibility: 'all residents', status: 'active' },
+      { id: 'b1-rooftop', name: 'Rooftop', description: 'Shared rooftop terrace.', location: 'Level 8', availability: 'Mon-Sun 7am-10pm', maxBookingLength: '2 hours', advanceNotice: '24 hours', approvalRequired: true, feePlaceholder: 'No fee', capacity: 40, rules: 'Noise restrictions after 9pm.', visibility: 'all residents', status: 'active' },
+      { id: 'b1-parking', name: 'Visitor parking', description: 'Short-stay visitor bay.', location: 'Basement B1', availability: 'Mon-Sun', maxBookingLength: '8 hours', advanceNotice: '12 hours', approvalRequired: false, feePlaceholder: 'No fee', capacity: 1, rules: 'Display booking confirmation.', visibility: 'all residents', status: 'active' }
+    ],
+    contacts: [
+      { id: 'b1-sm', type: 'Strata manager', name: 'Amelia Hart', detail: 'amelia@northshorestrata.com.au', visibility: 'all residents' },
+      { id: 'b1-bm', type: 'Building manager', name: 'Marcus Lee', detail: '02 9055 0188', visibility: 'all residents' },
+      { id: 'b1-concierge', type: 'Concierge', name: 'Harbourline concierge desk', detail: 'Lobby desk, 7am-7pm', visibility: 'all residents' },
+      { id: 'b1-lift', type: 'Lift company', name: 'LiftCare NSW', detail: 'contractor@liftcare.com.au', visibility: 'all residents' },
+      { id: 'b1-fire', type: 'Fire contractor', name: 'FireSafe Compliance', detail: 'bookings@firesafecompliance.com.au', visibility: 'all residents' }
+    ],
+    issueCategories: defaultIssueCategories,
+    renovationRules: defaultRenovationRules,
+    packageManagement: { enabled: true, collectionLocation: 'Concierge desk', collectionHours: '7am-7pm weekdays', idRequired: true, notificationRules: 'In-app notification when package is logged.' },
+    compliance: [
+      { id: 'b1-fire', category: 'Fire safety', enabled: true, frequency: 'Annual', responsible: 'FireSafe Compliance' },
+      { id: 'b1-afss', category: 'AFSS', enabled: true, frequency: 'Annual', responsible: 'Strata manager' },
+      { id: 'b1-lift', category: 'Lift servicing', enabled: true, frequency: 'Monthly', responsible: 'LiftCare NSW' },
+      { id: 'b1-insurance', category: 'Insurance', enabled: true, frequency: 'Annual', responsible: 'Portfolio admin' }
+    ],
+    assets: [
+      { id: 'b1-lift1', name: 'Lift 1', type: 'Lift', location: 'Core A', serviceFrequency: 'Monthly', contractorId: 'c3' },
+      { id: 'b1-fire-panel', name: 'Fire panel', type: 'Fire panel', location: 'Ground floor lobby', serviceFrequency: 'Quarterly', contractorId: 'c4' },
+      { id: 'b1-intercom', name: 'Intercom', type: 'Intercom', location: 'Front entry', serviceFrequency: 'Annual', contractorId: 'c6' }
+    ],
+    residentPermissions: { leviesVisibleTo: 'owners only', residentsCanPostFeed: false, tenantsCanBookFacilities: true, committeeDocumentsVisible: false },
+    notificationRules: ['Notices: residents in building only', 'Facilities: booking resident and manager only', 'Packages: resident recipient only']
+  },
+  {
+    buildingId: 'b2',
+    profile: { name: 'Glebe Foundry', buildingType: 'Converted warehouse', notes: 'No package collection, no pool, loading dock and lift move bookings only.' },
+    facilities: [
+      { id: 'b2-loading', name: 'Loading dock', description: 'Loading dock for moves and deliveries.', location: 'Rear laneway', availability: 'Mon-Fri 8am-4pm', maxBookingLength: '2 hours', advanceNotice: '48 hours', approvalRequired: true, feePlaceholder: 'No fee', capacity: 1, rules: 'Traffic management may be required.', visibility: 'all residents', status: 'active' },
+      { id: 'b2-lift-move', name: 'Lift move booking', description: 'Goods lift reservation.', location: 'Goods lift', availability: 'Mon-Fri 9am-3pm', maxBookingLength: '4 hours', advanceNotice: '72 hours', approvalRequired: true, feePlaceholder: '$300 bond placeholder', capacity: 1, rules: 'Lift blanket required.', visibility: 'all residents', status: 'active' }
+    ],
+    contacts: [
+      { id: 'b2-sm', type: 'Strata manager', name: 'Noah Haddad', detail: 'manager@northshorestrata.com.au', visibility: 'all residents' },
+      { id: 'b2-cleaner', type: 'Cleaner', name: 'Inner West Cleaning Co.', detail: 'cleaning desk via manager', visibility: 'all residents' },
+      { id: 'b2-electrician', type: 'Electrician', name: 'SparkPro Electrical', detail: 'Through strata manager', visibility: 'all residents' }
+    ],
+    issueCategories: defaultIssueCategories.map((item) => item.id === 'lift-issue' ? { ...item, label: 'Goods lift issue', enabled: true } : item.id === 'fire-safety' ? item : item),
+    renovationRules: defaultRenovationRules.filter((rule) => rule.id !== 'ev-charger'),
+    packageManagement: { enabled: false },
+    compliance: [
+      { id: 'b2-fire', category: 'Fire safety', enabled: true, frequency: 'Annual', responsible: 'FireSafe Compliance' },
+      { id: 'b2-insurance', category: 'Insurance', enabled: true, frequency: 'Annual', responsible: 'Portfolio admin' },
+      { id: 'b2-whs', category: 'WHS', enabled: true, frequency: 'Annual', responsible: 'Strata manager' }
+    ],
+    assets: [
+      { id: 'b2-goods-lift', name: 'Goods lift', type: 'Lift', location: 'Rear entry', serviceFrequency: 'Monthly', contractorId: 'c3' },
+      { id: 'b2-gate', name: 'Vehicle gate', type: 'Gates', location: 'Rear laneway', serviceFrequency: 'Quarterly', contractorId: 'c6' }
+    ],
+    residentPermissions: { leviesVisibleTo: 'owners only', residentsCanPostFeed: false, tenantsCanBookFacilities: true, committeeDocumentsVisible: false },
+    notificationRules: ['No package notifications', 'Loading dock bookings require approval']
+  },
+  {
+    buildingId: 'b3',
+    profile: { name: 'Bondi Pavilion Towers', buildingType: 'Beachside apartments', notes: 'Pool, gym, concierge and strict renovation controls.' },
+    facilities: [
+      { id: 'b3-pool', name: 'Pool', description: 'Outdoor resident pool.', location: 'Level 2 podium', availability: 'Mon-Sun 6am-9pm', maxBookingLength: 'Not bookable', advanceNotice: 'None', approvalRequired: false, feePlaceholder: 'No fee', capacity: 30, rules: 'Pool rules apply. Children supervised.', visibility: 'all residents', status: 'active' },
+      { id: 'b3-gym', name: 'Gym', description: 'Resident gym session booking.', location: 'Level 1', availability: 'Mon-Sun 5am-10pm', maxBookingLength: '90 minutes', advanceNotice: '2 hours', approvalRequired: false, feePlaceholder: 'No fee', capacity: 8, rules: 'Wipe equipment after use.', visibility: 'all residents', status: 'active' }
+    ],
+    contacts: [
+      { id: 'b3-sm', type: 'Strata manager', name: 'Priya Menon', detail: 'priya@northshorestrata.com.au', visibility: 'all residents' },
+      { id: 'b3-concierge', type: 'Concierge', name: 'Bondi Pavilion front desk', detail: '6am-10pm', visibility: 'all residents' },
+      { id: 'b3-insurance', type: 'Insurance contact', name: 'Harbour Mutual', detail: 'Claims via strata manager', visibility: 'committee only' }
+    ],
+    issueCategories: defaultIssueCategories,
+    renovationRules: defaultRenovationRules.map((rule) => ({ ...rule, committeeReviewRequired: true, approvalPathway: 'Manager then committee review' })),
+    packageManagement: { enabled: true, collectionLocation: 'Concierge room', collectionHours: '6am-10pm', idRequired: true, notificationRules: 'In-app notification plus concierge reminder.' },
+    compliance: [
+      { id: 'b3-pool', category: 'Pool compliance', enabled: true, frequency: 'Annual', responsible: 'Building manager' },
+      { id: 'b3-lift', category: 'Lift servicing', enabled: true, frequency: 'Monthly', responsible: 'LiftCare NSW' },
+      { id: 'b3-fire', category: 'Fire safety', enabled: true, frequency: 'Annual', responsible: 'FireSafe Compliance' }
+    ],
+    assets: [
+      { id: 'b3-pool-asset', name: 'Pool filtration', type: 'Pool', location: 'Plant room', serviceFrequency: 'Monthly' },
+      { id: 'b3-gym-asset', name: 'Gym HVAC', type: 'Gym', location: 'Level 1', serviceFrequency: 'Quarterly' },
+      { id: 'b3-lift', name: 'Lift bank', type: 'Lift', location: 'Main core', serviceFrequency: 'Monthly', contractorId: 'c3' }
+    ],
+    residentPermissions: { leviesVisibleTo: 'owners only', residentsCanPostFeed: false, tenantsCanBookFacilities: true, committeeDocumentsVisible: false },
+    notificationRules: ['Strict renovation notifications', 'Pool/gym notices only for Bondi residents']
+  }
+];
+
+export function getBuildingConfig(buildingId = 'b1') {
+  return buildingConfigurations.find((config) => config.buildingId === buildingId) ?? buildingConfigurations[0];
+}
 
 const firstNames = ['Sienna', 'Oliver', 'Mia', 'Thomas', 'Ava', 'Ethan', 'Zara', 'Jack', 'Chloe', 'Liam', 'Grace', 'Hugo', 'Layla', 'Noah', 'Ruby', 'Mason', 'Isla', 'Lucas', 'Sofia', 'Henry'];
 const lastNames = ['Nguyen', 'Taylor', 'Singh', 'Wilson', 'Khan', 'Brown', 'Patel', 'Harris', 'Kim', 'Owen', 'Ali', 'Martin', 'Chen', 'Walker', 'Ibrahim', 'Davis', 'Costa', 'Murphy', 'Sharma', 'Ryan'];
@@ -616,6 +826,7 @@ export const navItems: NavItem[] = [
   { id: 'compliance', label: 'Compliance', icon: ShieldCheck, roles: ['manager'] },
   { id: 'renovations', label: 'Renovations', icon: ClipboardCheck, roles: ['manager'] },
   { id: 'facilities', label: 'Facilities', icon: Landmark, roles: ['manager'] },
+  { id: 'building_settings', label: 'Building Settings', icon: ShieldCheck, roles: ['manager'] },
   { id: 'contractor', label: 'Contractors', icon: Wrench, roles: ['manager'] },
   { id: 'messages', label: 'Messages', icon: MessageSquare, roles: ['manager'] },
   { id: 'reports', label: 'Reports', icon: BarChart3, roles: ['manager'] },
@@ -626,6 +837,7 @@ export const navItems: NavItem[] = [
   { id: 'my_requests', label: 'My Requests', icon: ClipboardCheck, roles: ['resident'] },
   { id: 'documents', label: 'Documents', icon: FileText, roles: ['resident'] },
   { id: 'facilities', label: 'Facility Bookings', icon: Landmark, roles: ['resident'] },
+  { id: 'packages', label: 'Packages', icon: FileText, roles: ['resident'] },
   { id: 'my_levies', label: 'My Levies', icon: DollarSign, roles: ['resident'] },
   { id: 'directory', label: 'Building Directory', icon: ClipboardCheck, roles: ['resident'] },
   { id: 'messages', label: 'Messages', icon: MessageSquare, roles: ['resident'] },
