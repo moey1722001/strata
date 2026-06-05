@@ -176,7 +176,7 @@ export async function createResidentIssue(account: TestAccount | null, payload?:
     category,
     severity,
     title,
-    description: 'Reported from StrataOS resident portal.',
+    description: 'Reported from the Atlas resident portal.',
     routing_outcome: severity === 'Emergency' ? 'Maintenance request + incident' : 'Maintenance request',
     status: 'Triage'
   }).select('id').single();
@@ -295,7 +295,7 @@ export async function sendResidentMessage(account: TestAccount | null): Promise<
     user_id: manager.id,
     event_type: 'resident_message',
     title: 'New resident message',
-    body: 'A resident sent a message from StrataOS.',
+    body: 'A resident sent a message from Atlas.',
     channels: ['in-app']
   });
   await insertAudit(membership.company_id, membership.building_id, user.id, 'SEND_MESSAGE', 'messages', message.data.id);

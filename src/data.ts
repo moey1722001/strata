@@ -2,6 +2,7 @@ import {
   AlertTriangle,
   Bell,
   Building2,
+  CalendarDays,
   ClipboardCheck,
   DollarSign,
   FileText,
@@ -11,7 +12,7 @@ import {
   Landmark,
   LayoutDashboard,
   MessageSquare,
-  PackageCheck,
+  BarChart3,
   ShieldCheck,
   Users,
   Vote,
@@ -184,7 +185,15 @@ export type PageId =
   | 'building'
   | 'resident'
   | 'committee'
+  | 'motions'
+  | 'quotes'
+  | 'meetings'
   | 'contractor'
+  | 'staff_performance'
+  | 'contractor_performance'
+  | 'arrears_overview'
+  | 'compliance_risk'
+  | 'reports'
   | 'communications'
   | 'report_issue'
   | 'maintenance'
@@ -221,6 +230,59 @@ export const testAccounts: TestAccount[] = [
   { id: 'ta5', name: 'Oliver Taylor', email: 'committee@example.com', role: 'committee', title: 'Committee Secretary', buildingId: 'b1' },
   { id: 'ta6', name: 'Harvey Price', email: 'contractor@liftcare.com.au', role: 'contractor', title: 'LiftCare NSW Contractor', buildingId: 'b1' }
 ];
+
+export const roleBuildingScope: Record<Role, string[]> = {
+  super_admin: ['b1', 'b2', 'b3', 'b4'],
+  portfolio_admin: ['b1', 'b2', 'b3', 'b4'],
+  manager: ['b1', 'b2'],
+  resident: ['b1'],
+  committee: ['b1'],
+  contractor: []
+};
+
+export const rolePermissions: Record<Role, {
+  scope: string;
+  canSeeBuildings: 'all-tenants' | 'company' | 'assigned' | 'own' | 'assigned-jobs';
+  canSeeFinancials: 'platform' | 'portfolio-summary' | 'own-lot' | 'none';
+  canManage: string[];
+}> = {
+  super_admin: {
+    scope: 'All tenant companies',
+    canSeeBuildings: 'all-tenants',
+    canSeeFinancials: 'platform',
+    canManage: ['companies', 'usage metrics', 'system reports']
+  },
+  portfolio_admin: {
+    scope: 'All Northshore Strata Co. buildings',
+    canSeeBuildings: 'company',
+    canSeeFinancials: 'portfolio-summary',
+    canManage: ['buildings', 'staff performance', 'contractor performance', 'arrears overview', 'settings']
+  },
+  manager: {
+    scope: 'Assigned buildings only: Harbourline Residences and Glebe Foundry',
+    canSeeBuildings: 'assigned',
+    canSeeFinancials: 'none',
+    canManage: ['issues', 'work orders', 'notices', 'documents', 'renovations', 'facilities', 'messages']
+  },
+  resident: {
+    scope: 'Harbourline Residences, Lot 1A only',
+    canSeeBuildings: 'own',
+    canSeeFinancials: 'own-lot',
+    canManage: ['own issues', 'own bookings', 'own messages']
+  },
+  committee: {
+    scope: 'Committee records for Harbourline Residences',
+    canSeeBuildings: 'own',
+    canSeeFinancials: 'none',
+    canManage: ['motions', 'votes', 'committee documents', 'quotes']
+  },
+  contractor: {
+    scope: 'Assigned LiftCare NSW jobs only',
+    canSeeBuildings: 'assigned-jobs',
+    canSeeFinancials: 'none',
+    canManage: ['assigned jobs', 'job updates', 'job documents']
+  }
+};
 
 export const buildings: Building[] = [
   {
@@ -478,14 +540,14 @@ export const packages: SimpleRecord[] = [
   id: `pkg${index + 1}`,
   title,
   buildingId: buildings[index % buildings.length].id,
-  owner: people[index + 5].name,
+  owner: index === 0 ? 'Sienna Nguyen' : people[index + 5].name,
   status: index % 2 === 0 ? 'Awaiting collection' : 'Collected',
   due: `2026-06-${String(5 + index).padStart(2, '0')}`,
   meta: 'Notification sent'
 }));
 
 export const messages: SimpleRecord[] = [
-  { id: 'msg1', title: 'Resident question about lift repair', buildingId: 'b1', owner: 'Oliver Taylor', status: 'Unread', due: '2026-06-05', meta: 'Linked to MR-2' },
+  { id: 'msg1', title: 'My question about lift repair', buildingId: 'b1', owner: 'Sienna Nguyen', status: 'Unread', due: '2026-06-05', meta: 'Linked to MR-2' },
   { id: 'msg2', title: 'Committee discussion: waterproofing quote', buildingId: 'b3', owner: 'Committee', status: 'Open', due: '2026-06-06', meta: '2 unread replies' },
   { id: 'msg3', title: 'Contractor job update', buildingId: 'b4', owner: 'Secure Entry Systems', status: 'Open', due: '2026-06-05', meta: 'Photo uploaded' }
 ];
@@ -532,29 +594,54 @@ export const motions: SimpleRecord[] = [
 ];
 
 export const navItems: NavItem[] = [
-  { id: 'portfolio', label: 'Portfolio', icon: LayoutDashboard, roles: ['super_admin', 'portfolio_admin', 'manager'] },
-  { id: 'buildings', label: 'Buildings', icon: Building2, roles: ['super_admin', 'portfolio_admin', 'manager'] },
-  { id: 'building', label: 'Building Detail', icon: Home, roles: ['portfolio_admin', 'manager'] },
+  { id: 'portfolio', label: 'Platform Dashboard', icon: LayoutDashboard, roles: ['super_admin'] },
+  { id: 'users', label: 'Companies', icon: Building2, roles: ['super_admin'] },
+  { id: 'reports', label: 'Usage Metrics', icon: BarChart3, roles: ['super_admin'] },
+  { id: 'settings', label: 'Settings', icon: ShieldCheck, roles: ['super_admin', 'portfolio_admin'] },
+
+  { id: 'portfolio', label: 'Portfolio Dashboard', icon: LayoutDashboard, roles: ['portfolio_admin'] },
+  { id: 'buildings', label: 'Buildings', icon: Building2, roles: ['portfolio_admin'] },
+  { id: 'staff_performance', label: 'Staff Performance', icon: Users, roles: ['portfolio_admin'] },
+  { id: 'contractor_performance', label: 'Contractor Performance', icon: Wrench, roles: ['portfolio_admin'] },
+  { id: 'arrears_overview', label: 'Arrears Overview', icon: DollarSign, roles: ['portfolio_admin'] },
+  { id: 'compliance_risk', label: 'Compliance Risk', icon: ShieldCheck, roles: ['portfolio_admin'] },
+  { id: 'reports', label: 'Reports', icon: BarChart3, roles: ['portfolio_admin'] },
+
+  { id: 'portfolio', label: 'Dashboard', icon: LayoutDashboard, roles: ['manager'] },
+  { id: 'buildings', label: 'Buildings', icon: Building2, roles: ['manager'] },
+  { id: 'maintenance', label: 'Issues & Work Orders', icon: Hammer, roles: ['manager'] },
+  { id: 'communications', label: 'Communications', icon: MessageSquare, roles: ['manager'] },
+  { id: 'documents', label: 'Documents', icon: FileText, roles: ['manager'] },
+  { id: 'projects', label: 'Projects', icon: FolderKanban, roles: ['manager'] },
+  { id: 'compliance', label: 'Compliance', icon: ShieldCheck, roles: ['manager'] },
+  { id: 'renovations', label: 'Renovations', icon: ClipboardCheck, roles: ['manager'] },
+  { id: 'facilities', label: 'Facilities', icon: Landmark, roles: ['manager'] },
+  { id: 'contractor', label: 'Contractors', icon: Wrench, roles: ['manager'] },
+  { id: 'messages', label: 'Messages', icon: MessageSquare, roles: ['manager'] },
+  { id: 'reports', label: 'Reports', icon: BarChart3, roles: ['manager'] },
+
   { id: 'resident', label: 'Dashboard', icon: Home, roles: ['resident'] },
-  { id: 'communications', label: 'Communications', icon: MessageSquare, roles: ['portfolio_admin', 'manager', 'resident', 'committee'] },
-  { id: 'report_issue', label: 'Report Issue', icon: AlertTriangle, roles: ['resident', 'committee'] },
-  { id: 'projects', label: 'Projects', icon: FolderKanban, roles: ['portfolio_admin', 'manager', 'resident', 'committee'] },
-  { id: 'documents', label: 'Documents', icon: FileText, roles: ['portfolio_admin', 'manager', 'resident', 'committee'] },
-  { id: 'facilities', label: 'Facility Bookings', icon: Landmark, roles: ['portfolio_admin', 'manager', 'resident', 'committee'] },
-  { id: 'renovations', label: 'Renovations', icon: ClipboardCheck, roles: ['manager', 'resident', 'committee'] },
-  { id: 'packages', label: 'Packages', icon: PackageCheck, roles: ['resident'] },
-  { id: 'my_levies', label: 'My Levies', icon: DollarSign, roles: ['resident', 'committee'] },
+  { id: 'communications', label: 'Communications', icon: MessageSquare, roles: ['resident'] },
+  { id: 'report_issue', label: 'Report Issue', icon: AlertTriangle, roles: ['resident'] },
   { id: 'my_requests', label: 'My Requests', icon: ClipboardCheck, roles: ['resident'] },
-  { id: 'directory', label: 'Building Directory', icon: ClipboardCheck, roles: ['portfolio_admin', 'manager', 'resident', 'committee'] },
-  { id: 'messages', label: 'Messages', icon: MessageSquare, roles: ['resident', 'committee'] },
-  { id: 'committee', label: 'Committee', icon: Vote, roles: ['committee', 'portfolio_admin', 'manager'] },
-  { id: 'maintenance', label: 'Maintenance', icon: Hammer, roles: ['portfolio_admin', 'manager'] },
-  { id: 'incidents', label: 'Incidents', icon: AlertTriangle, roles: ['portfolio_admin', 'manager'] },
-  { id: 'compliance', label: 'Compliance', icon: ShieldCheck, roles: ['portfolio_admin', 'manager'] },
-  { id: 'levy_management', label: 'Levy Management', icon: DollarSign, roles: ['portfolio_admin', 'manager'] },
-  { id: 'contractor', label: 'Contractor Jobs', icon: Wrench, roles: ['manager', 'contractor'] },
-  { id: 'users', label: 'Users & Permissions', icon: Users, roles: ['super_admin', 'portfolio_admin', 'manager'] },
-  { id: 'audit', label: 'Audit Logs', icon: ShieldCheck, roles: ['super_admin', 'portfolio_admin', 'manager'] }
+  { id: 'documents', label: 'Documents', icon: FileText, roles: ['resident'] },
+  { id: 'facilities', label: 'Facility Bookings', icon: Landmark, roles: ['resident'] },
+  { id: 'my_levies', label: 'My Levies', icon: DollarSign, roles: ['resident'] },
+  { id: 'directory', label: 'Building Directory', icon: ClipboardCheck, roles: ['resident'] },
+  { id: 'messages', label: 'Messages', icon: MessageSquare, roles: ['resident'] },
+
+  { id: 'committee', label: 'Dashboard', icon: LayoutDashboard, roles: ['committee'] },
+  { id: 'motions', label: 'Motions & Voting', icon: Vote, roles: ['committee'] },
+  { id: 'projects', label: 'Projects', icon: FolderKanban, roles: ['committee'] },
+  { id: 'quotes', label: 'Quotes', icon: DollarSign, roles: ['committee'] },
+  { id: 'documents', label: 'Documents', icon: FileText, roles: ['committee'] },
+  { id: 'meetings', label: 'Meetings', icon: CalendarDays, roles: ['committee'] },
+  { id: 'messages', label: 'Messages', icon: MessageSquare, roles: ['committee'] },
+
+  { id: 'contractor', label: 'Dashboard', icon: LayoutDashboard, roles: ['contractor'] },
+  { id: 'maintenance', label: 'Assigned Jobs', icon: Wrench, roles: ['contractor'] },
+  { id: 'documents', label: 'Documents', icon: FileText, roles: ['contractor'] },
+  { id: 'messages', label: 'Messages', icon: MessageSquare, roles: ['contractor'] }
 ];
 
 export const company = {
@@ -583,8 +670,18 @@ export function currency(value: number) {
 
 export function filterForRole<T extends { buildingId?: string; contractorId?: string }>(items: T[], role: Role) {
   if (role === 'super_admin' || role === 'portfolio_admin') return items;
-  if (role === 'manager') return items.filter((item) => !item.buildingId || ['b1', 'b2'].includes(item.buildingId));
+  if (role === 'manager') return items.filter((item) => !item.buildingId || roleBuildingScope.manager.includes(item.buildingId));
   if (role === 'resident' || role === 'committee') return items.filter((item) => item.buildingId === 'b1');
-  if (role === 'contractor') return items.filter((item) => item.contractorId === 'c3' || item.buildingId === 'b1');
+  if (role === 'contractor') return items.filter((item) => item.contractorId === 'c3');
   return items;
+}
+
+export function filterPrivateForRole<T extends { buildingId?: string; contractorId?: string; owner?: string; resident?: string; unit?: string }>(items: T[], role: Role) {
+  if (role === 'resident') {
+    return items.filter((item) => item.buildingId === 'b1' && (item.owner === 'Sienna Nguyen' || item.resident === 'Sienna Nguyen' || item.unit === '1A'));
+  }
+  if (role === 'committee') {
+    return items.filter((item) => item.buildingId === 'b1' && (item.owner === 'Committee' || item.owner === 'Sienna Nguyen' || !item.owner));
+  }
+  return filterForRole(items, role);
 }

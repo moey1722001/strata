@@ -37,10 +37,12 @@ import {
   currency,
   documents,
   facilityBookings,
+  filterPrivateForRole,
   filterForRole,
   incidents,
   levies,
   maintenanceRequests,
+  meetings,
   messages,
   motions,
   navItems,
@@ -50,13 +52,16 @@ import {
   packages,
   people,
   projects,
+  roleBuildingScope,
   renovations,
   reportIssues,
+  rolePermissions,
   roleLabels,
   staff,
   testAccounts
 } from './data';
 import type { BuildingDirectory, LevyRecord, MaintenanceRequest, Notice, PageId, Priority, Project, ReportIssue, Role, SimpleRecord, TestAccount } from './data';
+import { AtlasLogo, AtlasMark } from './brand';
 import {
   addContractorUpdate,
   assignContractorToFirstJob,
@@ -134,7 +139,7 @@ function App() {
     packages,
     incidents
   });
-  const [actionStatus, setActionStatus] = useState('Workspace ready. Use Switch Role to test each StrataOS experience.');
+  const [actionStatus, setActionStatus] = useState('Workspace ready. Use Switch Role to test each Atlas experience.');
 
   const devRoleSwitcher = true;
 
@@ -287,12 +292,12 @@ function App() {
       <aside className={`fixed inset-y-0 left-0 z-40 w-72 border-r border-line bg-white/95 backdrop-blur xl:translate-x-0 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'} transition-transform`}>
         <div className="flex h-16 items-center justify-between border-b border-line px-5">
           <button className="flex items-center gap-3 text-left" onClick={() => setPage(defaultPageForRole(role))}>
-            <span className="grid h-10 w-10 place-items-center rounded-2xl bg-ink text-white shadow-soft">
-              <Building2 size={20} />
+            <span className="grid h-10 w-10 place-items-center rounded-2xl bg-primary text-white shadow-soft">
+              <AtlasMark className="h-7 w-7" />
             </span>
             <span>
-              <span className="block text-base font-semibold tracking-tight">StrataOS</span>
-              <span className="block text-xs text-slate-500">Northshore Strata Co.</span>
+              <span className="atlas-wordmark block text-base leading-none">ATLAS</span>
+              <span className="block text-xs text-slate-500">{rolePermissions[role].scope}</span>
             </span>
           </button>
           <button className="xl:hidden icon-button" onClick={() => setSidebarOpen(false)} aria-label="Close navigation">
@@ -302,10 +307,9 @@ function App() {
         <nav className="h-[calc(100vh-4rem)] overflow-y-auto px-3 py-4">
           {visibleNav.map((item) => {
             const Icon = item.icon;
-            const label = item.id === 'portfolio' && role === 'super_admin' ? 'Platform' : item.id === 'portfolio' && role === 'manager' ? 'Manager Dashboard' : item.label;
             return (
               <button
-                key={item.id}
+                key={`${item.id}-${item.label}`}
                 onClick={() => {
                   setPage(item.id);
                   setSidebarOpen(false);
@@ -313,7 +317,7 @@ function App() {
                 className={`nav-item ${page === item.id ? 'nav-item-active' : ''}`}
               >
                 <Icon size={18} />
-                <span>{label}</span>
+                <span>{item.label}</span>
               </button>
             );
           })}
@@ -353,8 +357,8 @@ function App() {
             <button className="icon-button" aria-label="Notifications">
               <Bell size={18} />
             </button>
-            <div className="hidden h-10 w-10 place-items-center rounded-full bg-navy text-sm font-semibold text-white sm:grid">
-              OS
+            <div className="hidden h-10 w-10 place-items-center rounded-full bg-primary text-white sm:grid" aria-label="Atlas workspace">
+              <AtlasMark className="h-7 w-7" />
             </div>
           </div>
         </header>
@@ -383,10 +387,7 @@ function PublicSite({
       <header className="sticky top-0 z-30 border-b border-line bg-white/90 backdrop-blur">
         <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
           <button className="flex items-center gap-3" onClick={() => setView('landing')}>
-            <span className="grid h-10 w-10 place-items-center rounded-2xl bg-ink text-white">
-              <Building2 size={20} />
-            </span>
-            <span className="text-lg font-semibold tracking-tight">StrataOS</span>
+            <AtlasLogo markClassName="text-primary" wordmarkClassName="text-primary" />
           </button>
           <div className="hidden items-center gap-6 text-sm font-medium text-slate-600 md:flex">
             <button onClick={() => setView('landing')}>Product</button>
@@ -405,7 +406,7 @@ function PublicSite({
             <div className="mx-auto grid min-h-[calc(100vh-4rem)] max-w-7xl items-center gap-10 px-4 py-10 sm:px-6 lg:grid-cols-[1fr_0.9fr] lg:px-8">
               <div>
                 <span className="pill bg-white/10 text-white ring-white/20">Australian strata management platform</span>
-                <h1 className="mt-6 max-w-3xl text-5xl font-semibold tracking-tight text-white sm:text-6xl lg:text-7xl">StrataOS</h1>
+                <AtlasLogo className="mt-6 text-white" markClassName="h-20 w-20 sm:h-24 sm:w-24" wordmarkClassName="text-5xl sm:text-6xl lg:text-7xl" tagline />
                 <p className="mt-6 max-w-2xl text-lg leading-8 text-slate-200">
                   A premium multi-tenant operating system for strata companies managing buildings, residents, committees,
                   contractors, levies, compliance and communications.
@@ -418,7 +419,7 @@ function PublicSite({
               </div>
               <div className="dashboard-preview">
                 <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
-                  <span className="text-sm font-semibold text-white">Portfolio operations</span>
+                  <AtlasLogo className="text-white" markClassName="h-8 w-8" wordmarkClassName="text-sm" />
                   <span className="pill bg-white/10 text-white ring-white/20">Strata management</span>
                 </div>
                 <div className="grid gap-3 p-5">
@@ -476,8 +477,8 @@ function PublicSite({
         <section className="mx-auto grid min-h-[calc(100vh-4rem)] max-w-6xl items-center gap-8 px-4 py-12 sm:px-6 lg:grid-cols-2 lg:px-8">
           <div>
             <span className="pill bg-navy text-white">Workspace access</span>
-            <h1 className="mt-5 text-4xl font-semibold tracking-tight">Enter the StrataOS workspace</h1>
-            <p className="mt-4 text-slate-600">Choose a role profile to review the main StrataOS workflows.</p>
+            <h1 className="mt-5 text-4xl font-semibold tracking-tight">Enter the Atlas workspace</h1>
+            <p className="mt-4 text-slate-600">Choose a role profile to review the main Atlas workflows.</p>
           </div>
           <div className="grid gap-3 rounded-3xl border border-line bg-white p-4 shadow-soft">
             {testAccounts.map((account) => (
@@ -497,7 +498,7 @@ function PublicSite({
         <section className="mx-auto grid min-h-[calc(100vh-4rem)] max-w-6xl items-center gap-8 px-4 py-12 sm:px-6 lg:grid-cols-2 lg:px-8">
           <div>
             <span className="pill bg-gold/10 text-gold ring-gold/20">Request walkthrough</span>
-            <h1 className="mt-5 text-4xl font-semibold tracking-tight">Show StrataOS to your portfolio team</h1>
+            <h1 className="mt-5 text-4xl font-semibold tracking-tight">Show Atlas to your portfolio team</h1>
             <p className="mt-4 text-slate-600">Tell us about your portfolio and we will tailor a walkthrough for your strata team.</p>
           </div>
           <form className="rounded-3xl border border-line bg-white p-6 shadow-soft">
@@ -522,15 +523,18 @@ function PageRouter({ page, role, onNavigate, data, actions }: { page: PageId; r
   if (page === 'portfolio' && role === 'manager') return <ManagerDashboard onNavigate={onNavigate} data={data} actions={actions} />;
   if (page === 'portfolio') return <PortfolioDashboard role={role} onNavigate={onNavigate} data={data} />;
   if (page === 'buildings') return <BuildingsPage role={role} />;
-  if (page === 'building') return <BuildingDashboard role={role} />;
+  if (page === 'building' && (role === 'manager' || role === 'portfolio_admin')) return <BuildingDashboard role={role} />;
   if (page === 'resident') return <ResidentDashboard role={role} onNavigate={onNavigate} data={data} />;
   if (page === 'committee') return <CommitteeDashboard role={role} onNavigate={onNavigate} data={data} actions={actions} />;
+  if (page === 'motions') return <MotionsPage role={role} data={data} actions={actions} />;
+  if (page === 'quotes') return <QuotesPage role={role} />;
+  if (page === 'meetings') return <MeetingsPage role={role} />;
   if (page === 'contractor') return <ContractorDashboard role={role} data={data} actions={actions} />;
   if (page === 'communications') return <CommunicationsHub role={role} onNavigate={onNavigate} data={data} actions={actions} />;
   if (page === 'report_issue') return <ReportIssuePage role={role} data={data} actions={actions} />;
   if (page === 'directory') return <BuildingDirectoryPage role={role} />;
   if (page === 'my_levies') return <MyLeviesPage role={role} />;
-  if (page === 'levy_management') return <LevyManagementPage role={role} />;
+  if (page === 'levy_management' && role === 'portfolio_admin') return <LevyManagementPage role={role} />;
   if (page === 'my_requests') return <MyRequestsPage role={role} data={data} actions={actions} />;
   if (page === 'messages') return <MessagesPage role={role} data={data} actions={actions} />;
   if (page === 'documents') return <DocumentsPage role={role} data={data} actions={actions} />;
@@ -538,8 +542,13 @@ function PageRouter({ page, role, onNavigate, data, actions }: { page: PageId; r
   if (page === 'projects') return <ProjectsPage role={role} />;
   if (page === 'facilities') return <FacilitiesPage role={role} data={data} actions={actions} />;
   if (page === 'renovations') return <RenovationsPage role={role} data={data} actions={actions} />;
-  if (page === 'packages') return <PackagesPage role={role} data={data} />;
+  if (page === 'packages' && role === 'resident') return <PackagesPage role={role} data={data} />;
   if (page === 'incidents') return <IncidentsPage role={role} data={data} actions={actions} />;
+  if (page === 'staff_performance') return <PerformancePage title="Staff Performance" eyebrow="Portfolio workload and response health" records={staffPerformanceRecords()} />;
+  if (page === 'contractor_performance') return <PerformancePage title="Contractor Performance" eyebrow="Response time, compliance and job quality" records={contractorPerformanceRecords()} />;
+  if (page === 'arrears_overview') return <LevyManagementPage role="portfolio_admin" />;
+  if (page === 'compliance_risk') return <ModulePage title="Compliance Risk" eyebrow="Highest-risk compliance deadlines" records={complianceItems.filter((item) => item.status !== 'Open')} cta="Export risk report" />;
+  if (page === 'reports') return <ReportsPage role={role} data={data} />;
 
   const moduleMap: Record<PageId, { title: string; eyebrow: string; records: SimpleRecord[]; cta: string }> = {
     public: { title: '', eyebrow: '', records: [], cta: '' },
@@ -548,7 +557,15 @@ function PageRouter({ page, role, onNavigate, data, actions }: { page: PageId; r
     building: { title: '', eyebrow: '', records: [], cta: '' },
     resident: { title: '', eyebrow: '', records: [], cta: '' },
     committee: { title: '', eyebrow: '', records: [], cta: '' },
+    motions: { title: '', eyebrow: '', records: [], cta: '' },
+    quotes: { title: '', eyebrow: '', records: [], cta: '' },
+    meetings: { title: '', eyebrow: '', records: [], cta: '' },
     contractor: { title: '', eyebrow: '', records: [], cta: '' },
+    staff_performance: { title: '', eyebrow: '', records: [], cta: '' },
+    contractor_performance: { title: '', eyebrow: '', records: [], cta: '' },
+    arrears_overview: { title: '', eyebrow: '', records: [], cta: '' },
+    compliance_risk: { title: '', eyebrow: '', records: [], cta: '' },
+    reports: { title: '', eyebrow: '', records: [], cta: '' },
     communications: { title: '', eyebrow: '', records: [], cta: '' },
     report_issue: { title: '', eyebrow: '', records: [], cta: '' },
     maintenance: { title: '', eyebrow: '', records: [], cta: '' },
@@ -565,8 +582,8 @@ function PageRouter({ page, role, onNavigate, data, actions }: { page: PageId; r
     messages: { title: '', eyebrow: '', records: [], cta: '' },
     directory: { title: '', eyebrow: '', records: [], cta: '' },
     settings: { title: 'Settings', eyebrow: 'Company, subscription, feature flags and integrations', records: company.featureFlags.map((flag, index) => ({ id: `ff${index}`, title: flag, buildingId: 'b1', owner: 'Platform', status: 'Enabled', meta: flag.includes('placeholder') ? 'Coming Soon' : 'Feature flag' })), cta: 'Add feature flag' },
-    users: { title: role === 'super_admin' ? 'Companies' : 'Users and Permissions', eyebrow: role === 'super_admin' ? 'Tenant companies and platform access' : 'Company roles and building-level memberships', records: role === 'super_admin' ? [{ id: 'co1', title: 'Northshore Strata Co.', buildingId: 'b1', owner: 'Amelia Hart', status: 'Active', meta: 'Scale plan · 4 buildings' }] : [...staff, ...committeeMembers.slice(0, 6)].map((person) => ({ id: person.id, title: person.name, buildingId: person.buildingId, owner: person.email, status: person.role, meta: person.unit })), cta: role === 'super_admin' ? 'Add company' : 'Invite user' },
-    audit: { title: 'Audit Logs', eyebrow: 'User, role, action, entity, old/new value and tenant context', records: data.auditLogs, cta: 'Export logs' }
+    users: { title: 'Companies', eyebrow: 'Tenant companies and platform access', records: [{ id: 'co1', title: 'Northshore Strata Co.', buildingId: 'b1', owner: 'Amelia Hart', status: 'Active', meta: 'Scale plan · 4 buildings' }], cta: 'Add company' },
+    audit: { title: 'Audit Logs', eyebrow: 'User, role, action, entity and tenant context', records: data.auditLogs, cta: 'Export logs' }
   };
 
   const config = moduleMap[page];
@@ -576,7 +593,7 @@ function PageRouter({ page, role, onNavigate, data, actions }: { page: PageId; r
 function PlatformDashboard({ onNavigate, data }: { onNavigate: (page: PageId) => void; data: MvpData }) {
   return (
     <div className="space-y-6">
-      <SectionHeader eyebrow="Platform" title="StrataOS platform dashboard" action={<button className="btn-primary" onClick={() => onNavigate('users')}><Building2 size={17} /> View companies</button>} />
+      <SectionHeader eyebrow="Platform" title="Atlas platform dashboard" action={<button className="btn-primary" onClick={() => onNavigate('users')}><Building2 size={17} /> View companies</button>} />
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <Metric title="Companies" value="1" detail="Northshore Strata Co." icon={Building2} />
         <Metric title="Buildings" value={buildings.length.toString()} detail="490 lots under management" icon={Home} tone="blue" />
@@ -593,10 +610,10 @@ function PlatformDashboard({ onNavigate, data }: { onNavigate: (page: PageId) =>
         </Panel>
         <Panel title="Platform actions">
           <ActionList actions={[
-            ['Review tenant usage', () => onNavigate('audit')],
-            ['Manage users and permissions', () => onNavigate('users')],
+            ['Review tenant usage', () => onNavigate('reports')],
+            ['View tenant companies', () => onNavigate('users')],
             ['Inspect portfolio dashboard', () => onNavigate('portfolio')],
-            ['View audit logs', () => onNavigate('audit')]
+            ['View system reports', () => onNavigate('reports')]
           ]} />
         </Panel>
       </div>
@@ -605,30 +622,31 @@ function PlatformDashboard({ onNavigate, data }: { onNavigate: (page: PageId) =>
 }
 
 function ManagerDashboard({ onNavigate, data, actions }: { onNavigate: (page: PageId) => void; data: MvpData; actions: FlowActions }) {
-  const assignedBuildings = buildings.slice(0, 2);
+  const assignedBuildings = buildings.filter((building) => roleBuildingScope.manager.includes(building.id));
   const openIssues = data.maintenanceRequests.filter((request) => assignedBuildings.some((building) => building.id === request.buildingId) && !['Completed', 'Closed', 'Rejected'].includes(request.status));
   const overdue = openIssues.filter((request) => request.overdue);
+  const emergencyIssues = filterForRole(data.reportIssues, 'manager').filter((issue) => issue.severity === 'Emergency' || issue.severity === 'High');
+  const renovationApprovals = filterForRole(data.renovations, 'manager').filter((item) => ['Manager Review', 'Committee Review', 'More Info Required'].includes(item.status));
+  const contractorUpdates = filterForRole(data.messages, 'manager').filter((message) => message.title.toLowerCase().includes('contractor') || message.meta?.toLowerCase().includes('contractor'));
+  const upcomingMeetings = filterForRole(meetings, 'manager').slice(0, 3);
   return (
     <div className="space-y-6">
       <SectionHeader eyebrow="Manager workspace" title="Assigned buildings need attention" action={<button className="btn-primary" onClick={() => onNavigate('communications')}><Bell size={17} /> Create notice</button>} />
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <Metric title="Assigned buildings" value={assignedBuildings.length.toString()} detail="Harbourline, Glebe Foundry" icon={Building2} />
-        <Metric title="Open issues" value={openIssues.length.toString()} detail={`${overdue.length} overdue`} icon={AlertTriangle} tone="amber" />
+        <Metric title="Emergency issues" value={emergencyIssues.length.toString()} detail={`${overdue.length} overdue work orders`} icon={AlertTriangle} tone="red" />
         <Metric title="Compliance risks" value={complianceItems.filter((item) => assignedBuildings.some((building) => building.id === item.buildingId) && item.status !== 'Open').length.toString()} detail="Due soon or overdue" icon={ShieldCheck} tone="red" />
-        <Metric title="Unread messages" value={data.messages.filter((message) => message.status === 'Unread').length.toString()} detail="Resident and contractor threads" icon={MessageSquare} tone="blue" />
+        <Metric title="Unread messages" value={filterForRole(data.messages, 'manager').filter((message) => message.status === 'Unread').length.toString()} detail="Resident and contractor threads" icon={MessageSquare} tone="blue" />
       </div>
       <div className="grid gap-5 xl:grid-cols-[1.2fr_0.8fr]">
         <Panel title="Issue triage queue" action={<button className="btn-secondary" onClick={() => onNavigate('maintenance')}><ArrowRight size={16} /> Open maintenance</button>}>
           <ReportIssueList issues={filterForRole(data.reportIssues, 'manager')} managerView actions={actions} />
         </Panel>
-        <Panel title="Manager actions">
-          <ActionList actions={[
-            ['Triage resident issue', () => onNavigate('maintenance')],
-            ['Assign contractor', () => onNavigate('maintenance')],
-            ['Create building notice', () => onNavigate('communications')],
-            ['Upload document', () => onNavigate('documents')],
-            ['Review levy arrears', () => onNavigate('levy_management')],
-            ['Review compliance risks', () => onNavigate('compliance')]
+        <Panel title="Attention list">
+          <RecordTable records={[
+            ...renovationApprovals.slice(0, 2),
+            ...contractorUpdates.slice(0, 2),
+            ...upcomingMeetings
           ]} />
         </Panel>
       </div>
@@ -648,12 +666,12 @@ function PortfolioDashboard({ role, onNavigate, data }: { role: Role; onNavigate
       <SectionHeader
         eyebrow={role === 'super_admin' ? 'Platform control centre' : 'Portfolio command'}
         title={role === 'super_admin' ? 'SaaS platform overview' : 'Northshore Strata Co. portfolio'}
-        action={<button className="btn-primary" onClick={() => onNavigate('users')}><UserPlus size={17} /> Manage users</button>}
+        action={<button className="btn-primary" onClick={() => onNavigate('reports')}><FileText size={17} /> Open reports</button>}
       />
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <Metric title="Buildings" value={scopedBuildings.length.toString()} detail={`${scopedBuildings.reduce((total, building) => total + building.lots, 0)} lots`} icon={Building2} />
         <Metric title="Open maintenance" value={openMaintenance.length.toString()} detail={`${overdue.length} overdue`} icon={HammerIcon} tone="amber" />
-        <Metric title={role === 'portfolio_admin' ? 'Portfolio arrears' : 'MRR'} value={role === 'portfolio_admin' ? currency(arrears) : currency(company.mrr)} detail={role === 'portfolio_admin' ? 'Company-wide levy risk' : `${company.plan} subscription`} icon={DollarSign} tone="green" />
+        <Metric title={role === 'portfolio_admin' ? 'Portfolio arrears' : 'Platform revenue'} value={role === 'portfolio_admin' ? currency(arrears) : currency(company.mrr)} detail={role === 'portfolio_admin' ? 'Company-wide levy risk' : 'Monthly recurring revenue'} icon={DollarSign} tone="green" />
         <Metric title="Compliance risk" value={`${complianceItems.filter((item) => item.status === 'Overdue').length} overdue`} detail="AFSS, insurance, lifts" icon={ShieldCheck} tone="red" />
       </div>
       <div className="grid gap-5 xl:grid-cols-[1.2fr_0.8fr]">
@@ -762,16 +780,18 @@ function BuildingDashboard({ role }: { role: Role }) {
 
 function ResidentDashboard({ role, onNavigate, data }: { role: Role; onNavigate: (page: PageId) => void; data: MvpData }) {
   const feed = filterForRole(data.notices, role);
-  const ownRequests = filterForRole(data.maintenanceRequests, role);
+  const ownRequests = filterPrivateForRole(data.maintenanceRequests, role);
+  const upcomingBooking = filterPrivateForRole(data.facilityBookings, role)[0];
+  const awaitingPackage = filterPrivateForRole(data.packages, role).find((item) => item.status === 'Awaiting collection');
   const directory = buildingDirectories[0];
   return (
     <div className="mx-auto max-w-5xl space-y-5">
       <SectionHeader eyebrow="Resident home" title="Harbourline Residences" action={<button className="btn-primary" onClick={() => onNavigate('report_issue')}><Plus size={17} /> Report issue</button>} />
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Metric title="Notices" value={feed.length.toString()} detail="Latest building updates" icon={Bell} />
-        <Metric title="Requests" value={ownRequests.length.toString()} detail="Track your issues" icon={Clock3} tone="amber" />
-        <Metric title="Bookings" value={facilityBookings.filter((item) => item.buildingId === 'b1').length.toString()} detail="Facilities" icon={CalendarDays} tone="blue" />
-        <Metric title="Documents" value="Quick links" detail="By-laws, minutes, reports" icon={FileText} tone="green" />
+        <Metric title="Open request" value={ownRequests[0]?.status ?? 'Clear'} detail={ownRequests[0]?.title ?? 'No active requests'} icon={Clock3} tone="amber" />
+        <Metric title="Next booking" value={upcomingBooking?.due ?? 'None'} detail={upcomingBooking?.title ?? 'No bookings scheduled'} icon={CalendarDays} tone="blue" />
+        <Metric title="Package" value={awaitingPackage ? 'Waiting' : 'Clear'} detail={awaitingPackage?.title ?? 'No packages awaiting collection'} icon={FileText} tone="green" />
       </div>
       <div className="grid gap-5 lg:grid-cols-[1.1fr_0.9fr]">
         <Panel title="Building feed">
@@ -862,7 +882,7 @@ function ContractorDashboard({ role, data, actions }: { role: Role; data: MvpDat
 function CommunicationsHub({ role, onNavigate, data, actions }: { role: Role; onNavigate: (page: PageId) => void; data: MvpData; actions: FlowActions }) {
   const [activeTab, setActiveTab] = useState<'Feed' | 'Notices' | 'Messages' | 'Alerts'>('Feed');
   const scopedNotices = filterForRole(data.notices, role);
-  const scopedMessages = filterForRole(data.messages, role);
+  const scopedMessages = role === 'resident' || role === 'committee' ? filterPrivateForRole(data.messages, role) : filterForRole(data.messages, role);
   const scopedAlerts = filterForRole(data.notifications, role);
   const tabs = ['Feed', 'Notices', 'Messages', 'Alerts'] as const;
   const recordsByTab: Record<typeof activeTab, SimpleRecord[]> = {
@@ -896,7 +916,7 @@ function CommunicationsHub({ role, onNavigate, data, actions }: { role: Role; on
 }
 
 function ReportIssuePage({ role, data, actions }: { role: Role; data: MvpData; actions: FlowActions }) {
-  const scopedIssues = filterForRole(data.reportIssues, role);
+  const scopedIssues = filterPrivateForRole(data.reportIssues, role);
   const categories: ReportIssue['category'][] = ['Maintenance', 'Damage', 'Security', 'Noise', 'Safety', 'Other'];
   const [selectedCategory, setSelectedCategory] = useState<ReportIssue['category']>('Maintenance');
 
@@ -1042,24 +1062,32 @@ function MyRequestsPage({ role, data, actions }: { role: Role; data: MvpData; ac
     <div className="mx-auto max-w-5xl space-y-6">
       <SectionHeader eyebrow="My Requests" title="Track reported issues" action={<button className="btn-primary" onClick={() => actions.reportIssue()}><Plus size={17} /> Report issue</button>} />
       <Panel title="Request progress">
-        <ReportIssueList issues={filterForRole(data.reportIssues, role)} />
+        <ReportIssueList issues={filterPrivateForRole(data.reportIssues, role)} />
       </Panel>
     </div>
   );
 }
 
 function MessagesPage({ role, data, actions }: { role: Role; data: MvpData; actions: FlowActions }) {
+  const records = role === 'contractor'
+    ? contractorMessageRecords(data.maintenanceRequests)
+    : role === 'resident' || role === 'committee'
+      ? filterPrivateForRole(data.messages, role)
+      : filterForRole(data.messages, role);
   return (
     <div className="space-y-6">
-      <SectionHeader eyebrow="Messages" title="Building conversations and manager replies" action={<button className="btn-primary" onClick={actions.sendMessage}><MessageSquare size={17} /> Send message</button>} />
+      <SectionHeader eyebrow="Messages" title="Building conversations and manager replies" action={(role === 'resident' || role === 'committee') ? <button className="btn-primary" onClick={actions.sendMessage}><MessageSquare size={17} /> Send message</button> : undefined} />
       <Panel title="Conversations">
-        <RecordTable records={filterForRole(data.messages, role)} />
+        <RecordTable records={records} />
       </Panel>
     </div>
   );
 }
 
 function DocumentsPage({ role, data, actions }: { role: Role; data: MvpData; actions: FlowActions }) {
+  const records = role === 'contractor'
+    ? contractorDocumentRecords(data.maintenanceRequests)
+    : filterForRole(data.documents, role);
   return (
     <div className="space-y-6">
       <SectionHeader
@@ -1068,13 +1096,23 @@ function DocumentsPage({ role, data, actions }: { role: Role; data: MvpData; act
         action={(role === 'manager' || role === 'portfolio_admin') ? <button className="btn-primary" onClick={actions.uploadDocument}><Plus size={17} /> Upload document</button> : undefined}
       />
       <Panel title="Available documents">
-        <RecordTable records={filterForRole(data.documents, role)} />
+        <RecordTable records={records} />
       </Panel>
     </div>
   );
 }
 
 function MaintenancePage({ role, data, actions }: { role: Role; data: MvpData; actions: FlowActions }) {
+  if (role === 'contractor') {
+    const assigned = filterForRole(data.maintenanceRequests, 'contractor');
+    return (
+      <div className="space-y-6">
+        <SectionHeader eyebrow="Assigned Jobs" title="LiftCare NSW work queue" />
+        <MaintenanceCards requests={assigned} contractorView onContractorUpdate={actions.contractorUpdate} onStatusUpdate={(id) => actions.contractorUpdate(id, 'Viewed')} />
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       <SectionHeader eyebrow="Maintenance" title="Internal triage, contractors and SLA timers" action={<ComingSoonButton primary icon={<Plus size={17} />} label="New internal job" />} />
@@ -1091,7 +1129,7 @@ function MaintenancePage({ role, data, actions }: { role: Role; data: MvpData; a
 }
 
 function FacilitiesPage({ role, data, actions }: { role: Role; data: MvpData; actions: FlowActions }) {
-  const records = filterForRole(data.facilityBookings, role);
+  const records = role === 'resident' ? filterPrivateForRole(data.facilityBookings, role) : filterForRole(data.facilityBookings, role);
   return (
     <div className="space-y-6">
       <SectionHeader
@@ -1155,12 +1193,12 @@ function RenovationsPage({ role, data, actions }: { role: Role; data: MvpData; a
 }
 
 function PackagesPage({ role, data }: { role: Role; data: MvpData }) {
-  const records = filterForRole(data.packages, role).filter((pkg) => pkg.owner === 'Hugo Martin' || pkg.status === 'Awaiting collection');
+  const records = filterPrivateForRole(data.packages, role).filter((pkg) => pkg.status === 'Awaiting collection');
   return (
     <div className="mx-auto max-w-5xl space-y-6">
       <SectionHeader eyebrow="Packages" title="Package notifications" />
       <Panel title="Awaiting collection">
-        <RecordTable records={records.length ? records : filterForRole(data.packages, role)} />
+        <RecordTable records={records} />
       </Panel>
     </div>
   );
@@ -1190,6 +1228,68 @@ function IncidentsPage({ role, data, actions }: { role: Role; data: MvpData; act
       </div>
     </div>
   );
+}
+
+function MotionsPage({ role, data, actions }: { role: Role; data: MvpData; actions: FlowActions }) {
+  const records = filterForRole(data.motions, role);
+  return (
+    <div className="space-y-6">
+      <SectionHeader eyebrow="Motions & Voting" title="Committee decisions awaiting action" />
+      <div className="grid gap-4 lg:grid-cols-2">
+        {records.map((motion) => (
+          <article className="rounded-3xl border border-line bg-white p-5 shadow-soft" key={motion.id}>
+            <Badge label={motion.status} />
+            <h3 className="mt-3 font-semibold">{motion.title}</h3>
+            <p className="mt-1 text-sm text-slate-500">{buildingName(motion.buildingId)} · {motion.meta}</p>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <button className="btn-secondary" onClick={actions.vote}>Vote yes</button>
+              <ComingSoonButton label="Abstain" />
+            </div>
+          </article>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function QuotesPage({ role }: { role: Role }) {
+  return <ModulePage title="Quotes" eyebrow="Committee-visible contractor quotes" records={filterForRole(quoteRecords(), role)} cta="Request quote" />;
+}
+
+function MeetingsPage({ role }: { role: Role }) {
+  return <ModulePage title="Meetings" eyebrow="Committee meetings, agendas and records" records={filterForRole(meetings, role)} cta="Create meeting" />;
+}
+
+function PerformancePage({ title, eyebrow, records }: { title: string; eyebrow: string; records: SimpleRecord[] }) {
+  return (
+    <div className="space-y-6">
+      <SectionHeader eyebrow={eyebrow} title={title} />
+      <Panel title="Portfolio signals">
+        <RecordTable records={records} />
+      </Panel>
+    </div>
+  );
+}
+
+function ReportsPage({ role, data }: { role: Role; data: MvpData }) {
+  const recordsByRole: Record<Role, SimpleRecord[]> = {
+    super_admin: [
+      { id: 'usage-1', title: 'Northshore Strata Co. usage', buildingId: 'b1', owner: 'Platform', status: 'Active', due: '2026-06-06', meta: `${company.usage}% workspace usage` },
+      { id: 'usage-2', title: 'Feature adoption', buildingId: 'b1', owner: 'Platform', status: 'Open', due: '2026-06-12', meta: 'Communications, documents, maintenance' }
+    ],
+    portfolio_admin: [
+      ...levySummaryByBuilding().map(summaryToRecord),
+      ...contractorPerformanceRecords().slice(0, 3)
+    ],
+    manager: [
+      ...filterForRole(data.maintenanceRequests, 'manager').slice(0, 4).map(maintenanceToRecord),
+      ...filterForRole(complianceItems, 'manager').filter((item) => item.status !== 'Open')
+    ],
+    resident: [],
+    committee: [],
+    contractor: []
+  };
+  return <ModulePage title="Reports" eyebrow={rolePermissions[role].scope} records={recordsByRole[role]} cta="Export report" />;
 }
 
 function NoticeCard({ notice }: { notice: Notice }) {
@@ -1542,6 +1642,67 @@ function projectToRecord(project: Project): SimpleRecord {
   };
 }
 
+function staffPerformanceRecords(): SimpleRecord[] {
+  return staff.map((person, index) => ({
+    id: `staff-${person.id}`,
+    title: person.name,
+    buildingId: person.buildingId,
+    owner: person.email,
+    status: index === 1 ? 'High workload' : 'On track',
+    due: `${filterForRole(maintenanceRequests, 'portfolio_admin').filter((request) => request.buildingId === person.buildingId && !['Closed', 'Completed'].includes(request.status)).length} open items`,
+    meta: `${84 + index * 3}% SLA response`
+  }));
+}
+
+function contractorPerformanceRecords(): SimpleRecord[] {
+  return contractors.map((contractor, index) => ({
+    id: `contractor-${contractor.id}`,
+    title: contractor.company,
+    buildingId: buildings[index % buildings.length].id,
+    owner: contractor.contact,
+    status: contractor.rating >= 4.7 ? 'Preferred' : 'Active',
+    due: contractor.insuranceExpiry,
+    meta: `${contractor.trade} · ${contractor.response} avg response · ${contractor.completed} jobs`
+  }));
+}
+
+function quoteRecords(): SimpleRecord[] {
+  return projects.map((project) => ({
+    id: `quote-${project.id}`,
+    title: `${project.title} quote package`,
+    buildingId: project.buildingId,
+    owner: contractors.find((contractor) => contractor.id === project.contractorId)?.company ?? 'Contractor',
+    status: project.status === 'Approved' ? 'Approved' : 'Open',
+    due: project.nextMilestone,
+    amount: Math.round(project.budget * 0.18),
+    meta: project.risk
+  }));
+}
+
+function contractorDocumentRecords(requests: MaintenanceRequest[]): SimpleRecord[] {
+  return filterForRole(requests, 'contractor').map((request) => ({
+    id: `contractor-doc-${request.id}`,
+    title: `${request.title} job brief`,
+    buildingId: request.buildingId,
+    owner: 'LiftCare NSW',
+    status: 'Visible',
+    due: request.submitted,
+    meta: 'Scope, photos and site access notes'
+  }));
+}
+
+function contractorMessageRecords(requests: MaintenanceRequest[]): SimpleRecord[] {
+  return filterForRole(requests, 'contractor').map((request) => ({
+    id: `contractor-msg-${request.id}`,
+    title: `${request.title} job comments`,
+    buildingId: request.buildingId,
+    owner: 'Building manager',
+    status: request.status === 'Completed' ? 'Closed' : 'Open',
+    due: todayLabel(),
+    meta: 'Linked to assigned work order'
+  }));
+}
+
 function levySummaryByBuilding() {
   return buildings.map((building) => {
     const buildingLevies = levies.filter((levy) => levy.buildingId === building.id);
@@ -1584,7 +1745,7 @@ function levyToPrivateRecord(levy: LevyRecord): SimpleRecord {
 
 function cleanActionMessage(message: string) {
   return message
-    .replace('Using local seeded test account. Configure Supabase env vars to use Supabase Auth.', 'Workspace ready. Use Switch Role to test each StrataOS experience.');
+    .replace('Using local seeded test account. Configure Supabase env vars to use Supabase Auth.', 'Workspace ready. Use Switch Role to test each Atlas experience.');
 }
 
 function todayLabel() {
