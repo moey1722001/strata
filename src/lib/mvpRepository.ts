@@ -2,6 +2,9 @@ import { supabase, isSupabaseConfigured, supabaseEnvStatus } from './supabase';
 import { auditLogs, buildingConfigurations, company, incidents, packages, testAccounts } from '../data';
 import type { Building, BuildingConfiguration, MaintenanceRequest, Notice, Priority, ReportIssue, Role, SimpleRecord, TestAccount } from '../data';
 
+const SANDBOX_BUILDING_ID = '00000000-0000-4000-8000-000000000101';
+const DOCUMENTS_BUCKET = 'atlas-documents';
+
 export type MvpData = {
   buildings: Building[];
   notices: Notice[];
@@ -98,7 +101,7 @@ export async function loadMvpData(account: TestAccount | null, role: Role): Prom
 
   if (role === 'contractor') return loadContractorMvpData(account, user.id);
 
-  const allowedBuildingIds = await getAllowedBuildingIds(user.id, role);
+  const allowedBuildingIds = sandboxBuildingIds(await getAllowedBuildingIds(user.id, role));
   const companyId = user.company_id ?? company.id;
   const hasBuildingScope = allowedBuildingIds.length > 0;
   const buildingFilter = hasBuildingScope ? allowedBuildingIds : ['00000000-0000-0000-0000-000000000000'];
@@ -117,7 +120,8 @@ export async function loadMvpData(account: TestAccount | null, role: Role): Prom
     voteRows,
     facilityRows,
     renovationRows,
-    buildingSettingsRows
+    buildingSettingsRows,
+    jobUpdateRows
   ] = await Promise.all([
     supabase.from('buildings').select('*').in('id', buildingFilter).order('name'),
     supabase.from('notices').select('*').in('building_id', buildingFilter).order('created_at', { ascending: false }),
@@ -134,19 +138,27 @@ export async function loadMvpData(account: TestAccount | null, role: Role): Prom
     supabase.from('committee_votes').select('motion_id, vote'),
     supabase.from('facility_bookings').select('*, resident:users!facility_bookings_resident_id_fkey(full_name)').in('building_id', buildingFilter).order('starts_at', { ascending: false }),
     supabase.from('renovation_requests').select('*, resident:users!renovation_requests_resident_id_fkey(full_name)').in('building_id', buildingFilter),
-    supabase.from('building_settings').select('*').in('building_id', buildingFilter)
+    supabase.from('building_settings').select('*').in('building_id', buildingFilter),
+    supabase.from('contractor_job_updates').select('*, contractors(company_name)').in('building_id', buildingFilter).order('created_at', { ascending: true })
   ]);
 
   const workOrders = workOrderRows.data ?? [];
   const votes = voteRows.data ?? [];
+  const contractorUpdates = jobUpdateRows.data ?? [];
+  const noticeData = noticeRows.data ?? [];
+  if (role === 'resident' && noticeData.length) await markNoticesRead(noticeData, user.id);
+  const documentRecords = await Promise.all((documentRows.data ?? []).map(mapDocument));
 
   return {
     buildings: (buildingRows.data ?? []).map(mapBuilding),
-    notices: (noticeRows.data ?? []).map(mapNotice),
+    notices: noticeData.map(mapNotice),
     reportIssues: (issueRows.data ?? []).map(mapIssue),
-    maintenanceRequests: (maintenanceRows.data ?? []).map((row) => mapMaintenance(row, workOrders.find((workOrder) => workOrder.maintenance_request_id === row.id))),
+    maintenanceRequests: (maintenanceRows.data ?? []).map((row) => {
+      const workOrder = workOrders.find((item) => item.maintenance_request_id === row.id);
+      return mapMaintenance(row, workOrder, contractorUpdates.filter((update) => update.work_order_id === workOrder?.id));
+    }),
     messages: (messageRows.data ?? []).map(mapMessage),
-    documents: (documentRows.data ?? []).map(mapDocument),
+    documents: documentRecords,
     notifications: (notificationRows.data ?? []).map((row) => mapSimple(row, row.title, row.event_type)),
     auditLogs: (auditRows.data ?? []).map((row) => mapSimple(row, row.action, row.entity_type)),
     motions: (motionRows.data ?? []).map((row) => mapMotion(row, votes.filter((vote) => vote.motion_id === row.id))),
@@ -163,11 +175,12 @@ async function loadContractorMvpData(account: TestAccount, userId: string): Prom
   const contractor = await supabase.from('contractors').select('id').eq('email', account.email).maybeSingle();
   if (!contractor.data) return emptyData;
 
-  const [workOrders, messagesForContractor, notificationsForContractor, documentsForContractor] = await Promise.all([
-    supabase.from('work_orders').select('*, maintenance_requests(*, lots(unit_number), users(full_name))').eq('contractor_id', contractor.data.id).order('created_at', { ascending: false }),
+  const [workOrders, messagesForContractor, notificationsForContractor, documentsForContractor, jobUpdates] = await Promise.all([
+    supabase.from('work_orders').select('*, maintenance_requests(*, lots(unit_number), users(full_name))').eq('contractor_id', contractor.data.id).eq('building_id', SANDBOX_BUILDING_ID).order('created_at', { ascending: false }),
     supabase.from('messages').select('*, sender:users!messages_sender_id_fkey(full_name), recipient:users!messages_recipient_id_fkey(full_name)').or(`recipient_id.eq.${userId},sender_id.eq.${userId}`).order('created_at', { ascending: false }),
     supabase.from('notifications').select('*').eq('user_id', userId).order('created_at', { ascending: false }),
-    supabase.from('contractor_documents').select('*').eq('contractor_id', contractor.data.id)
+    supabase.from('contractor_documents').select('*').eq('contractor_id', contractor.data.id),
+    supabase.from('contractor_job_updates').select('*').eq('contractor_id', contractor.data.id).eq('building_id', SANDBOX_BUILDING_ID).order('created_at', { ascending: true })
   ]);
 
   return {
@@ -176,7 +189,7 @@ async function loadContractorMvpData(account: TestAccount, userId: string): Prom
       ...(row.maintenance_requests ?? {}),
       contractor_id: row.contractor_id,
       status: row.status
-    }, row)),
+    }, row, (jobUpdates.data ?? []).filter((update) => update.work_order_id === row.id))),
     messages: (messagesForContractor.data ?? []).map(mapMessage),
     documents: (documentsForContractor.data ?? []).map((row) => ({
       id: row.id,
@@ -188,7 +201,7 @@ async function loadContractorMvpData(account: TestAccount, userId: string): Prom
       meta: row.file_url
     })),
     notifications: (notificationsForContractor.data ?? []).map((row) => mapSimple(row, row.title, row.event_type)),
-    buildingConfigurations
+    buildingConfigurations: buildingConfigurations.filter((config) => config.buildingId === 'b1')
   };
 }
 
@@ -535,19 +548,29 @@ export async function sendResidentMessage(account: TestAccount | null, payload?:
   return { ok: true, message: 'Message saved in Supabase.' };
 }
 
-export async function uploadDocument(account: TestAccount | null, payload?: Partial<SimpleRecord>): Promise<MvpActionResult> {
+export async function uploadDocument(account: TestAccount | null, payload?: Partial<SimpleRecord> & { file?: File }): Promise<MvpActionResult> {
   const context = await requireUserContext(account);
   if (!context.ok) return context;
   const { user, membership } = context;
   const visibility = payload?.status === 'Committee only' ? 'committee' : 'residents';
   const buildingId = databaseBuildingId(payload?.buildingId) ?? membership.building_id;
+  let fileUrl = payload?.due || 'https://example.com/document-pending-upload';
+
+  if (payload?.file) {
+    const safeName = payload.file.name.replace(/[^a-zA-Z0-9._-]/g, '-').toLowerCase();
+    const path = `${buildingId}/${Date.now()}-${safeName}`;
+    const upload = await supabase!.storage.from(DOCUMENTS_BUCKET).upload(path, payload.file, { upsert: false });
+    if (upload.error) return { ok: false, message: upload.error.message };
+    fileUrl = `storage://${upload.data.path}`;
+  }
+
   const document = await supabase!.from('documents').insert({
     company_id: membership.company_id,
     building_id: buildingId,
     uploaded_by: user.id,
     category: payload?.meta ?? 'Building documents',
     title: payload?.title ?? 'Building document',
-    file_url: payload?.due || 'https://example.com/document-pending-upload',
+    file_url: fileUrl,
     visibility,
     version: 1
   }).select('id').single();
@@ -679,6 +702,10 @@ async function getAllowedBuildingIds(userId: string, role: Role) {
   return memberships.data?.map((row) => row.building_id) ?? [];
 }
 
+function sandboxBuildingIds(ids: string[]) {
+  return ids.includes(SANDBOX_BUILDING_ID) ? [SANDBOX_BUILDING_ID] : [];
+}
+
 async function resolveMaintenanceRequestId(id: string) {
   if (!supabase) return id;
   const maintenance = await supabase.from('maintenance_requests').select('id').eq('id', id).maybeSingle();
@@ -715,6 +742,17 @@ async function notifyContractor(companyId: string, buildingId: string, contracto
 async function insertNotification(companyId: string, buildingId: string, userId: string, eventType: string, title: string, body: string) {
   if (!supabase) return;
   await supabase.from('notifications').insert({ company_id: companyId, building_id: buildingId, user_id: userId, event_type: eventType, title, body, channels: ['in-app', 'email'] });
+}
+
+async function markNoticesRead(rows: any[], userId: string) {
+  if (!supabase) return;
+  const client = supabase;
+  const readAt = new Date().toISOString();
+  await Promise.all(rows.map(async (row) => {
+    if (row.read_receipts?.[userId]) return;
+    row.read_receipts = { ...(row.read_receipts ?? {}), [userId]: readAt };
+    await client.from('notices').update({ read_receipts: row.read_receipts }).eq('id', row.id);
+  }));
 }
 
 function classifySupabaseError(error: { code?: string; message?: string }) {
@@ -824,7 +862,8 @@ function mapIssue(row: any): ReportIssue {
   };
 }
 
-function mapMaintenance(row: any, workOrder?: any): MaintenanceRequest {
+function mapMaintenance(row: any, workOrder?: any, jobUpdates: any[] = []): MaintenanceRequest {
+  const currentStatus = workOrder?.status ?? row.status;
   return {
     id: row.id,
     title: row.title,
@@ -834,11 +873,16 @@ function mapMaintenance(row: any, workOrder?: any): MaintenanceRequest {
     resident: row.users?.full_name ?? 'Resident',
     contractorId: localContractorId(row.contractor_id ?? workOrder?.contractor_id),
     priority: row.priority,
-    status: workOrder?.status ?? row.status,
+    status: currentStatus,
     submitted: row.created_at,
     slaHours: 48,
     overdue: row.sla_due_at ? new Date(row.sla_due_at).getTime() < Date.now() : false,
-    access: row.preferred_access_times ?? 'Resident appointment required'
+    access: row.preferred_access_times ?? 'Resident appointment required',
+    timeline: [
+      `Submitted by ${row.users?.full_name ?? 'resident'}: ${row.created_at}`,
+      `Current status: ${currentStatus}`,
+      ...jobUpdates.map((update) => `${update.contractors?.company_name ?? 'Contractor'}: ${update.status} - ${update.body}`)
+    ]
   };
 }
 
@@ -854,7 +898,8 @@ function mapMessage(row: any): SimpleRecord {
   };
 }
 
-function mapDocument(row: any): SimpleRecord {
+async function mapDocument(row: any): Promise<SimpleRecord> {
+  const signedUrl = row.file_url?.startsWith('storage://') ? await signedDocumentUrl(row.file_url.replace('storage://', '')) : row.file_url;
   return {
     id: row.id,
     title: row.title,
@@ -863,7 +908,7 @@ function mapDocument(row: any): SimpleRecord {
     status: row.visibility === 'committee' ? 'Committee only' : 'Visible',
     due: row.created_at,
     meta: row.category,
-    href: row.file_url
+    href: signedUrl
   };
 }
 
@@ -914,4 +959,10 @@ function mapSimple(row: any, title: string, meta: string): SimpleRecord {
     due: row.created_at ?? row.due_date,
     meta
   };
+}
+
+async function signedDocumentUrl(path: string) {
+  if (!supabase) return undefined;
+  const signed = await supabase.storage.from(DOCUMENTS_BUCKET).createSignedUrl(path, 60 * 60);
+  return signed.data?.signedUrl;
 }

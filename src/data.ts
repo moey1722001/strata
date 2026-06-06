@@ -90,6 +90,7 @@ export type MaintenanceRequest = {
   slaHours: number;
   overdue: boolean;
   access: string;
+  timeline?: string[];
 };
 
 export type BuildingDirectory = {
@@ -264,6 +265,7 @@ export type SimpleRecord = {
   meta?: string;
   amount?: number;
   href?: string;
+  createdBy?: string;
 };
 
 export type NavItem = {
@@ -319,7 +321,6 @@ export const roleLabels: Record<Role, string> = {
 };
 
 export const testAccounts: TestAccount[] = [
-  { id: 'ta1', name: 'Clara Bennett', email: 'super@strataos.test', role: 'super_admin', title: 'Platform Operations Lead' },
   { id: 'ta2', name: 'Amelia Hart', email: 'owner@northshorestrata.com.au', role: 'portfolio_admin', title: 'Company Owner' },
   { id: 'ta3', name: 'Noah Haddad', email: 'manager@northshorestrata.com.au', role: 'manager', title: 'Strata Manager', buildingId: 'b1' },
   { id: 'ta4', name: 'Sienna Nguyen', email: 'resident@example.com', role: 'resident', title: 'Owner occupier', buildingId: 'b1' },
@@ -328,12 +329,12 @@ export const testAccounts: TestAccount[] = [
 ];
 
 export const roleBuildingScope: Record<Role, string[]> = {
-  super_admin: ['b1', 'b2', 'b3', 'b4'],
-  portfolio_admin: ['b1', 'b2', 'b3', 'b4'],
-  manager: ['b1', 'b2'],
+  super_admin: ['b1'],
+  portfolio_admin: ['b1'],
+  manager: ['b1'],
   resident: ['b1'],
   committee: ['b1'],
-  contractor: []
+  contractor: ['b1']
 };
 
 export const rolePermissions: Record<Role, {
@@ -349,19 +350,19 @@ export const rolePermissions: Record<Role, {
     canManage: ['companies', 'usage metrics', 'system reports']
   },
   portfolio_admin: {
-    scope: 'All Northshore Strata Co. buildings',
+    scope: 'Atlas Residences sandbox',
     canSeeBuildings: 'company',
     canSeeFinancials: 'portfolio-summary',
-    canManage: ['buildings', 'staff performance', 'contractor performance', 'arrears overview', 'settings']
+    canManage: ['messages', 'notices', 'documents', 'maintenance', 'facility bookings']
   },
   manager: {
-    scope: 'Assigned buildings only: Harbourline Residences and Glebe Foundry',
+    scope: 'Atlas Residences only',
     canSeeBuildings: 'assigned',
     canSeeFinancials: 'none',
-    canManage: ['issues', 'work orders', 'notices', 'documents', 'renovations', 'facilities', 'messages']
+    canManage: ['issues', 'work orders', 'notices', 'documents', 'facility bookings', 'messages']
   },
   resident: {
-    scope: 'Harbourline Residences, Lot 1A only',
+    scope: 'Atlas Residences, Lot 1A only',
     canSeeBuildings: 'own',
     canSeeFinancials: 'own-lot',
     canManage: ['own issues', 'own bookings', 'own messages']
@@ -383,55 +384,16 @@ export const rolePermissions: Record<Role, {
 export const buildings: Building[] = [
   {
     id: 'b1',
-    name: 'Harbourline Residences',
-    address: '18 Hickson Road, Walsh Bay NSW',
-    suburb: 'Walsh Bay',
-    lots: 126,
-    manager: 'Amelia Hart',
-    satisfaction: 94,
-    complaints: 8,
-    maintenanceSpend: 184500,
-    arrears: 43800,
-    profit: 28
-  },
-  {
-    id: 'b2',
-    name: 'Glebe Foundry',
-    address: '42 Bridge Road, Glebe NSW',
-    suburb: 'Glebe',
-    lots: 84,
+    name: 'Atlas Residences',
+    address: '100 Test Street, Sydney NSW',
+    suburb: 'Sydney',
+    lots: 100,
     manager: 'Noah Haddad',
-    satisfaction: 88,
-    complaints: 14,
-    maintenanceSpend: 96500,
-    arrears: 29750,
-    profit: 18
-  },
-  {
-    id: 'b3',
-    name: 'Bondi Pavilion Towers',
-    address: '7 Curlewis Street, Bondi Beach NSW',
-    suburb: 'Bondi Beach',
-    lots: 112,
-    manager: 'Priya Menon',
-    satisfaction: 91,
-    complaints: 11,
-    maintenanceSpend: 152300,
-    arrears: 31890,
-    profit: 22
-  },
-  {
-    id: 'b4',
-    name: 'Parramatta Quarter',
-    address: '66 George Street, Parramatta NSW',
-    suburb: 'Parramatta',
-    lots: 168,
-    manager: 'Luca Romano',
-    satisfaction: 84,
-    complaints: 23,
-    maintenanceSpend: 221900,
-    arrears: 71320,
-    profit: 12
+    satisfaction: 0,
+    complaints: 0,
+    maintenanceSpend: 0,
+    arrears: 0,
+    profit: 0
   }
 ];
 
@@ -806,12 +768,36 @@ export const motions: SimpleRecord[] = [
 ];
 
 export const navItems: NavItem[] = [
-  { id: 'portfolio', label: 'Platform Dashboard', icon: LayoutDashboard, roles: ['super_admin'] },
-  { id: 'users', label: 'Companies', icon: Building2, roles: ['super_admin'] },
-  { id: 'reports', label: 'Usage Metrics', icon: BarChart3, roles: ['super_admin'] },
-  { id: 'settings', label: 'Settings', icon: ShieldCheck, roles: ['super_admin', 'portfolio_admin'] },
+  { id: 'portfolio', label: 'Sandbox Dashboard', icon: LayoutDashboard, roles: ['super_admin', 'portfolio_admin'] },
+  { id: 'messages', label: 'Messages', icon: MessageSquare, roles: ['super_admin', 'portfolio_admin'] },
+  { id: 'communications', label: 'Notices', icon: Bell, roles: ['super_admin', 'portfolio_admin'] },
+  { id: 'documents', label: 'Documents', icon: FileText, roles: ['super_admin', 'portfolio_admin'] },
+  { id: 'maintenance', label: 'Maintenance', icon: Hammer, roles: ['super_admin', 'portfolio_admin'] },
+  { id: 'facilities', label: 'Facility Bookings', icon: Landmark, roles: ['super_admin', 'portfolio_admin'] },
 
-  { id: 'portfolio', label: 'Portfolio Dashboard', icon: LayoutDashboard, roles: ['portfolio_admin'] },
+  { id: 'portfolio', label: 'Dashboard', icon: LayoutDashboard, roles: ['manager'] },
+  { id: 'messages', label: 'Messages', icon: MessageSquare, roles: ['manager'] },
+  { id: 'communications', label: 'Notices', icon: Bell, roles: ['manager'] },
+  { id: 'documents', label: 'Documents', icon: FileText, roles: ['manager'] },
+  { id: 'maintenance', label: 'Maintenance', icon: Hammer, roles: ['manager'] },
+  { id: 'facilities', label: 'Facility Bookings', icon: Landmark, roles: ['manager'] },
+
+  { id: 'resident', label: 'Dashboard', icon: Home, roles: ['resident'] },
+  { id: 'messages', label: 'Messages', icon: MessageSquare, roles: ['resident'] },
+  { id: 'communications', label: 'Notices', icon: Bell, roles: ['resident'] },
+  { id: 'report_issue', label: 'Report Issue', icon: AlertTriangle, roles: ['resident'] },
+  { id: 'my_requests', label: 'My Requests', icon: ClipboardCheck, roles: ['resident'] },
+  { id: 'documents', label: 'Documents', icon: FileText, roles: ['resident'] },
+  { id: 'facilities', label: 'Facility Bookings', icon: Landmark, roles: ['resident'] },
+
+  { id: 'committee', label: 'Dashboard', icon: LayoutDashboard, roles: ['committee'] },
+  { id: 'motions', label: 'Motions & Voting', icon: Vote, roles: ['committee'] },
+
+  { id: 'contractor', label: 'Dashboard', icon: LayoutDashboard, roles: ['contractor'] },
+  { id: 'maintenance', label: 'Assigned Job', icon: Wrench, roles: ['contractor'] }
+];
+
+export const deferredNavItems: NavItem[] = [
   { id: 'buildings', label: 'Buildings', icon: Building2, roles: ['portfolio_admin'] },
   { id: 'maintenance', label: 'Issues & Work Orders', icon: Hammer, roles: ['portfolio_admin'] },
   { id: 'communications', label: 'Communications', icon: MessageSquare, roles: ['portfolio_admin'] },

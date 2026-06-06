@@ -120,7 +120,7 @@ type FlowActions = {
   contractorUpdate: (id?: string, status?: string, note?: string) => Promise<void>;
   createNotice: (payload?: Partial<Notice>) => Promise<void>;
   sendMessage: (payload?: Partial<SimpleRecord>) => Promise<void>;
-  uploadDocument: (payload?: Partial<SimpleRecord>) => Promise<void>;
+  uploadDocument: (payload?: Partial<SimpleRecord> & { file?: File }) => Promise<void>;
   vote: (payload?: Partial<SimpleRecord>) => Promise<void>;
   bookFacility: (payload?: Partial<SimpleRecord>) => Promise<void>;
   submitRenovation: (payload?: Partial<SimpleRecord>) => Promise<void>;
@@ -264,7 +264,7 @@ function App() {
     contractorUpdate: (id?: string, status = 'In Progress', note?: string) => runAction(() => addContractorUpdate(currentAccount, id, status, note)),
     createNotice: (payload?: Partial<Notice>) => runAction(() => createNotice(currentAccount, payload)),
     sendMessage: (payload?: Partial<SimpleRecord>) => runAction(() => sendResidentMessage(currentAccount, payload)),
-    uploadDocument: (payload?: Partial<SimpleRecord>) => runAction(() => uploadDocument(currentAccount, payload)),
+    uploadDocument: (payload?: Partial<SimpleRecord> & { file?: File }) => runAction(() => uploadDocument(currentAccount, payload)),
     vote: (payload?: Partial<SimpleRecord>) => runAction(() => voteOnMotion(currentAccount, payload)),
     bookFacility: (payload?: Partial<SimpleRecord>) => runAction(() => bookFacility(currentAccount, payload)),
     submitRenovation: (payload?: Partial<SimpleRecord>) => runAction(() => submitRenovation(currentAccount, payload)),
@@ -275,44 +275,45 @@ function App() {
     saveBuildingConfig: (config: BuildingConfiguration, action: string) => runAction(() => updateBuildingConfiguration(currentAccount, config, action))
   };
 
-  async function submitWorkflowForm(payload: Record<string, string>, context?: FormContext) {
+  async function submitWorkflowForm(payload: Record<string, string | File>, context?: FormContext) {
     if (!activeForm) return;
     const targetId = context?.id;
+    const field = (name: string) => typeof payload[name] === 'string' ? payload[name] as string : '';
     if (activeForm.kind === 'addBuilding') {
-      await flowActions.createBuilding(payload);
+      await flowActions.createBuilding(stringPayload(payload));
     }
     if (activeForm.kind === 'sendMessage') {
-      await flowActions.sendMessage({ title: payload.title, meta: payload.body });
+      await flowActions.sendMessage({ title: field('title'), meta: field('body') });
     }
     if (activeForm.kind === 'createNotice') {
-      const selectedBuilding = [...mvpData.buildings, ...buildings].find((building) => building.name === payload.building);
-      await flowActions.createNotice({ title: payload.title, buildingId: selectedBuilding?.id, category: payload.category, priority: payload.priority as Priority, body: payload.body, audience: payload.audience });
+      const selectedBuilding = [...mvpData.buildings, ...buildings].find((building) => building.name === field('building'));
+      await flowActions.createNotice({ title: field('title'), buildingId: selectedBuilding?.id, category: field('category'), priority: field('priority') as Priority, body: field('body'), audience: field('audience') });
     }
     if (activeForm.kind === 'uploadDocument') {
-      const selectedBuilding = [...mvpData.buildings, ...buildings].find((building) => building.name === payload.building);
-      await flowActions.uploadDocument({ title: payload.title, buildingId: selectedBuilding?.id, status: payload.visibility, meta: payload.category, due: payload.url });
+      const selectedBuilding = [...mvpData.buildings, ...buildings].find((building) => building.name === field('building'));
+      await flowActions.uploadDocument({ title: field('title'), buildingId: selectedBuilding?.id, status: field('visibility'), meta: field('category'), due: field('url'), file: payload.file instanceof File ? payload.file : undefined });
     }
     if (activeForm.kind === 'reportIssue') {
-      await flowActions.reportIssue({ title: payload.title, category: payload.category as ReportIssue['category'], severity: payload.severity as Priority, description: payload.description });
+      await flowActions.reportIssue({ title: field('title'), category: field('category') as ReportIssue['category'], severity: field('severity') as Priority, description: field('description') });
     }
     if (activeForm.kind === 'bookFacility') {
-      await flowActions.bookFacility({ title: payload.title, due: payload.date, meta: payload.notes });
+      await flowActions.bookFacility({ title: field('title'), due: field('date'), meta: field('notes') });
     }
     if (activeForm.kind === 'submitRenovation') {
-      await flowActions.submitRenovation({ title: payload.title, due: payload.date, meta: payload.scope });
+      await flowActions.submitRenovation({ title: field('title'), due: field('date'), meta: field('scope') });
     }
     if (activeForm.kind === 'assignContractor') {
       await flowActions.assignContractor(targetId);
     }
     if (activeForm.kind === 'updateJobStatus' && targetId) {
       if (role === 'contractor') {
-        await flowActions.contractorUpdate(targetId, payload.status, payload.note);
+        await flowActions.contractorUpdate(targetId, field('status'), field('note'));
       } else {
-        await flowActions.updateMaintenanceStatus(targetId, payload.status, payload.note);
+        await flowActions.updateMaintenanceStatus(targetId, field('status'), field('note'));
       }
     }
     if (activeForm.kind === 'voteMotion') {
-      await flowActions.vote({ id: targetId, meta: payload.vote });
+      await flowActions.vote({ id: targetId, meta: field('vote') });
     }
     setActiveForm(null);
   }
@@ -678,12 +679,12 @@ function ManagerDashboard({ onNavigate, data, actions }: { onNavigate: (page: Pa
   const unreadMessages = data.messages.filter((message) => message.status === 'Unread');
   return (
     <div className="space-y-6">
-      <SectionHeader eyebrow="Manager workspace" title="Assigned buildings need attention" action={<button className="btn-primary" onClick={() => actions.openForm('createNotice')}><Bell size={17} /> Create notice</button>} />
+      <SectionHeader eyebrow="Sandbox manager workspace" title="Atlas Residences" action={<button className="btn-primary" onClick={() => actions.openForm('createNotice')}><Bell size={17} /> Create notice</button>} />
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <Metric title="Assigned buildings" value={assignedBuildings.length.toString()} detail="Your managed schemes" icon={Building2} />
-        <Metric title="Emergency issues" value={emergencyIssues.length.toString()} detail={`${overdue.length} overdue work orders`} icon={AlertTriangle} tone="red" />
+        <Metric title="Building" value={assignedBuildings[0]?.name ?? 'Atlas Residences'} detail="Single-building sandbox" icon={Building2} />
+        <Metric title="Open maintenance" value={openIssues.length.toString()} detail={`${overdue.length} overdue`} icon={AlertTriangle} tone="amber" />
         <Metric title="Unread messages" value={unreadMessages.length.toString()} detail="Resident conversations" icon={MessageSquare} tone="blue" />
-        <Metric title="Recent documents" value={data.documents.length.toString()} detail="Available across assigned buildings" icon={FileText} tone="green" />
+        <Metric title="Documents" value={data.documents.length.toString()} detail="Resident-visible files" icon={FileText} tone="green" />
       </div>
       <div className="grid gap-5 xl:grid-cols-[1.2fr_0.8fr]">
         <Panel title="Issue triage queue" action={<button className="btn-secondary" onClick={() => onNavigate('maintenance')}><ArrowRight size={16} /> Open maintenance</button>}>
@@ -711,34 +712,26 @@ function PortfolioDashboard({ role, onNavigate, data }: { role: Role; onNavigate
   return (
     <div className="space-y-6">
       <SectionHeader
-        eyebrow="Portfolio workspace"
-        title="Northshore Strata Co."
-        action={<button className="btn-primary" onClick={() => onNavigate('buildings')}><Plus size={17} /> Add building</button>}
+        eyebrow="Atlas sandbox"
+        title="Atlas Residences"
+        action={<button className="btn-primary" onClick={() => onNavigate('messages')}><MessageSquare size={17} /> Test messages</button>}
       />
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <Metric title="Buildings" value={scopedBuildings.length.toString()} detail={`${scopedBuildings.reduce((total, building) => total + building.lots, 0)} lots`} icon={Building2} />
-        <Metric title="Open maintenance" value={openMaintenance.length.toString()} detail={`${overdue.length} overdue`} icon={HammerIcon} tone="amber" />
+        <Metric title="Building" value={scopedBuildings[0]?.name ?? 'Atlas Residences'} detail={`${scopedBuildings[0]?.lots ?? 100} lots`} icon={Building2} />
+        <Metric title="Maintenance" value={openMaintenance.length.toString()} detail={`${overdue.length} overdue`} icon={HammerIcon} tone="amber" />
         <Metric title="Unread messages" value={unreadMessages.length.toString()} detail="Resident conversations" icon={MessageSquare} tone="blue" />
-        <Metric title="Documents" value={data.documents.length.toString()} detail="Available across the portfolio" icon={FileText} tone="green" />
+        <Metric title="Documents" value={data.documents.length.toString()} detail="Storage-backed files" icon={FileText} tone="green" />
       </div>
       <div className="grid gap-5 xl:grid-cols-[1.2fr_0.8fr]">
-        <Panel title="Buildings" action={<button className="btn-secondary" onClick={() => onNavigate('buildings')}><ArrowRight size={16} /> Manage buildings</button>}>
+        <Panel title="Workflow shortcuts">
           <div className="space-y-3">
-            {scopedBuildings.map((building) => (
-              <div key={building.id} className="rounded-2xl border border-line p-4">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div>
-                    <h3 className="font-semibold">{building.name}</h3>
-                    <p className="text-sm text-slate-500">{building.address}</p>
-                  </div>
-                  <Badge label={`${building.lots} lots`} tone="Low" />
-                </div>
-                <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                  <MiniStat label="Open issues" value={data.maintenanceRequests.filter((request) => request.buildingId === building.id && !['Closed', 'Completed'].includes(request.status)).length.toString()} />
-                  <MiniStat label="Recent notices" value={data.notices.filter((notice) => notice.buildingId === building.id).length.toString()} />
-                </div>
-              </div>
-            ))}
+            <ActionList actions={[
+              ['Resident sends message', () => onNavigate('messages')],
+              ['Resident reports issue', () => onNavigate('maintenance')],
+              ['Manager publishes notice', () => onNavigate('communications')],
+              ['Manager uploads document', () => onNavigate('documents')],
+              ['Resident books BBQ Area', () => onNavigate('facilities')]
+            ]} />
           </div>
         </Panel>
         <Panel title="Recent activity">
@@ -822,7 +815,7 @@ function ResidentDashboard({ role, onNavigate, data, actions, buildingConfig }: 
     ['See notices', 'communications'],
     ['Report an issue', 'report_issue'],
     ['View documents', 'documents'],
-    ['Check building contacts', 'directory'],
+    ['Book BBQ Area', 'facilities'],
     ['Track requests', 'my_requests'],
     ['Message manager', 'messages']
   ];
@@ -898,15 +891,13 @@ function CommitteeDashboard({ role, onNavigate, data, actions }: { role: Role; o
 }
 
 function ContractorDashboard({ role, data, actions }: { role: Role; data: MvpData; actions: FlowActions }) {
-  const assigned = filterForRole(data.maintenanceRequests, role).filter((request) => request.contractorId);
+  const assigned = data.maintenanceRequests.filter((request) => request.contractorId);
   return (
     <div className="space-y-6">
-      <SectionHeader eyebrow="Contractor portal" title="Assigned jobs and compliance" action={<ComingSoonButton primary icon={<Download size={17} />} label="Upload invoice" />} />
+      <SectionHeader eyebrow="Contractor portal" title="Assigned Atlas Residences job" />
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <Metric title="Assigned jobs" value={assigned.length.toString()} detail="Across permitted buildings" icon={Clock3} />
-        <Metric title="In progress" value={assigned.filter((item) => item.status === 'In Progress').length.toString()} detail="Roster today" icon={CheckCircle2} tone="blue" />
-        <Metric title="Quotes requested" value="2" detail="Upload quote PDFs" icon={FileText} tone="amber" />
-        <Metric title="Insurance expiry" value="17 days" detail="Reminder active" icon={ShieldCheck} tone="red" />
+        <Metric title="Assigned jobs" value={assigned.length.toString()} detail="Only contractor-visible work" icon={Clock3} />
+        <Metric title="In progress" value={assigned.filter((item) => item.status === 'In Progress').length.toString()} detail="Status updates persist" icon={CheckCircle2} tone="blue" />
       </div>
       <MaintenanceCards
         requests={assigned}
@@ -919,36 +910,17 @@ function ContractorDashboard({ role, data, actions }: { role: Role; data: MvpDat
 }
 
 function CommunicationsHub({ role, onNavigate, data, actions }: { role: Role; onNavigate: (page: PageId) => void; data: MvpData; actions: FlowActions }) {
-  const [activeTab, setActiveTab] = useState<'Feed' | 'Notices' | 'Messages' | 'Alerts'>('Feed');
   const scopedNotices = data.notices;
-  const scopedMessages = data.messages;
-  const scopedAlerts = data.notifications;
-  const tabs = ['Feed', 'Notices', 'Messages', 'Alerts'] as const;
-  const recordsByTab: Record<typeof activeTab, SimpleRecord[]> = {
-    Feed: scopedNotices.slice(0, 8).map(noticeToRecord),
-    Notices: scopedNotices.map(noticeToRecord),
-    Messages: scopedMessages,
-    Alerts: scopedAlerts
-  };
 
   return (
     <div className="space-y-6">
-      <SectionHeader eyebrow="Communications Hub" title="Feed, notices, messages and alerts" action={<button className="btn-primary" onClick={() => actions.openForm(role === 'manager' || role === 'portfolio_admin' ? 'createNotice' : 'sendMessage')}><Plus size={17} /> {role === 'manager' || role === 'portfolio_admin' ? 'Create notice' : 'Message manager'}</button>} />
-      <Panel title="Communication centre" action={<NotificationRules />}>
-        <div className="mb-5 flex flex-wrap gap-2">
-          {tabs.map((tabName) => (
-            <button key={tabName} className={`tab-button ${activeTab === tabName ? 'tab-button-active' : ''}`} onClick={() => setActiveTab(tabName)}>
-              {tabName}
-            </button>
-          ))}
-        </div>
-        {activeTab === 'Feed' ? (
+      <SectionHeader eyebrow="Notices" title="Atlas Residences notices" action={(role === 'manager' || role === 'portfolio_admin' || role === 'super_admin') ? <button className="btn-primary" onClick={() => actions.openForm('createNotice')}><Plus size={17} /> Create notice</button> : undefined} />
+      <Panel title="Published notices" action={<NotificationRules />}>
+        {scopedNotices.length ? (
           <div className="grid gap-4 lg:grid-cols-2">
-            {scopedNotices.slice(0, 6).map((notice) => <NoticeCard notice={notice} key={notice.id} />)}
+            {scopedNotices.map((notice) => <NoticeCard notice={notice} key={notice.id} />)}
           </div>
-        ) : (
-          <RecordTable records={recordsByTab[activeTab]} />
-        )}
+        ) : <EmptyState title="No notices yet" copy="Managers can create the first Atlas Residences notice from this page." />}
       </Panel>
     </div>
   );
@@ -1164,7 +1136,7 @@ function MaintenancePage({ role, data, actions }: { role: Role; data: MvpData; a
 
   return (
     <div className="space-y-6">
-      <SectionHeader eyebrow="Maintenance" title="Internal triage, contractors and SLA timers" action={<ComingSoonButton primary icon={<Plus size={17} />} label="New internal job" />} />
+      <SectionHeader eyebrow="Maintenance" title="Issue triage and contractor assignment" />
       <div className="grid gap-5 xl:grid-cols-[0.9fr_1.1fr]">
         <Panel title="Resident issues to triage">
           <ReportIssueList issues={data.reportIssues} managerView actions={actions} />
@@ -1183,17 +1155,17 @@ function MaintenancePage({ role, data, actions }: { role: Role; data: MvpData; a
 }
 
 function FacilitiesPage({ role, data, actions, buildingConfig }: { role: Role; data: MvpData; actions: FlowActions; buildingConfig: BuildingConfiguration }) {
-  const records = role === 'resident' ? filterPrivateForRole(data.facilityBookings, role) : filterForRole(data.facilityBookings, role);
+  const records = data.facilityBookings;
   const facilities = activeFacilities(buildingConfig);
   const residentCanBook = facilities.length > 0;
   return (
     <div className="space-y-6">
       <SectionHeader
         eyebrow="Facility Bookings"
-        title={role === 'resident' || role === 'committee' ? `${buildingConfig.profile.name} facilities` : 'Facility approvals'}
-        action={(role === 'resident' || role === 'committee') && residentCanBook ? <button className="btn-primary" onClick={() => actions.openForm('bookFacility')}><Plus size={17} /> Book facility</button> : undefined}
+        title="BBQ Area bookings"
+        action={role === 'resident' && residentCanBook ? <button className="btn-primary" onClick={() => actions.openForm('bookFacility')}><Plus size={17} /> Request booking</button> : undefined}
       />
-      {(role === 'resident' || role === 'committee') && (
+      {role === 'resident' && (
         facilities.length ? (
           <div className="grid gap-4 lg:grid-cols-2">
             {facilities.map((facility) => (
@@ -1219,12 +1191,14 @@ function FacilitiesPage({ role, data, actions, buildingConfig }: { role: Role; d
           <EmptyState title="No facilities available for booking" copy="This building has no active resident-bookable facilities configured." />
         )
       )}
-      <Panel title={role === 'manager' || role === 'portfolio_admin' ? 'Bookings awaiting review' : 'My bookings'}>
-        <RecordTable records={records} />
-      </Panel>
-      {(role === 'manager' || role === 'portfolio_admin') && (
+      {role === 'resident' && (
+        <Panel title="My bookings">
+          <RecordTable records={records} />
+        </Panel>
+      )}
+      {(role === 'manager' || role === 'portfolio_admin' || role === 'super_admin') && (
         <div className="grid gap-5 xl:grid-cols-[0.9fr_1.1fr]">
-          <Panel title={`${buildingConfig.profile.name} configured facilities`}>
+          <Panel title="Configured facility">
             <RecordTable records={buildingConfig.facilities.map((facility) => ({
               id: facility.id,
               title: facility.name,
@@ -1235,7 +1209,7 @@ function FacilitiesPage({ role, data, actions, buildingConfig }: { role: Role; d
             }))} />
           </Panel>
           <div className="grid gap-4">
-            {records.map((booking) => (
+            {records.length ? records.map((booking) => (
               <article className="rounded-3xl border border-line bg-white p-5 shadow-soft" key={booking.id}>
                 <Badge label={booking.status} />
                 <h3 className="mt-3 font-semibold">{booking.title}</h3>
@@ -1246,7 +1220,7 @@ function FacilitiesPage({ role, data, actions, buildingConfig }: { role: Role; d
                   <button className="btn-secondary" onClick={() => actions.updateFacilityBooking(booking.id, 'Closed')}>Decline</button>
                 </div>
               </article>
-            ))}
+            )) : <EmptyState title="No booking requests" copy="Resident BBQ Area requests will appear here for approval." />}
           </div>
         </div>
       )}
@@ -2050,9 +2024,10 @@ function WorkflowModal({
   data: MvpData;
   buildingConfig: BuildingConfiguration;
   onClose: () => void;
-  onSubmit: (payload: Record<string, string>, context?: FormContext) => Promise<void>;
+  onSubmit: (payload: Record<string, string | File>, context?: FormContext) => Promise<void>;
 }) {
   const [values, setValues] = useState<Record<string, string>>({});
+  const [files, setFiles] = useState<Record<string, File>>({});
 
   if (!activeForm) return null;
 
@@ -2066,8 +2041,9 @@ function WorkflowModal({
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    await onSubmit(formValues, currentForm.context);
+    await onSubmit({ ...formValues, ...files }, currentForm.context);
     setValues({});
+    setFiles({});
   }
 
   return (
@@ -2089,6 +2065,16 @@ function WorkflowModal({
               <span className="text-sm font-medium text-slate-600">{field.label}</span>
               {field.type === 'textarea' ? (
                 <textarea className="mt-2 min-h-28 w-full rounded-2xl border border-line px-4 py-3 outline-none focus:border-harbour" value={formValues[field.name] ?? ''} onChange={(event) => updateValue(field.name, event.target.value)} required={field.required} />
+              ) : field.type === 'file' ? (
+                <input className="mt-2 w-full rounded-2xl border border-line px-4 py-3 outline-none file:mr-4 file:rounded-full file:border-0 file:bg-slate-100 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-ink focus:border-harbour" type="file" onChange={(event) => {
+                  const nextFile = event.target.files?.[0];
+                  setFiles((current) => {
+                    const next = { ...current };
+                    if (nextFile) next[field.name] = nextFile;
+                    else delete next[field.name];
+                    return next;
+                  });
+                }} required={field.required} />
               ) : field.options ? (
                 <select className="mt-2 w-full rounded-2xl border border-line px-4 py-3 outline-none focus:border-harbour" value={formValues[field.name] ?? field.options[0]} onChange={(event) => updateValue(field.name, event.target.value)} required={field.required}>
                   {field.options.map((option) => <option key={option} value={option}>{option}</option>)}
@@ -2111,7 +2097,7 @@ function WorkflowModal({
 type FormField = {
   name: string;
   label: string;
-  type?: 'text' | 'textarea';
+  type?: 'text' | 'textarea' | 'file';
   required?: boolean;
   options?: string[];
 };
@@ -2180,15 +2166,16 @@ function formConfig(kind: FormKind, role: Role, context: FormContext | undefined
     },
     uploadDocument: {
       title: 'Upload document',
-      copy: 'Adds a document record visible to residents when visibility is set to Visible.',
-      submitLabel: 'Add document',
+      copy: 'Uploads a file to Supabase Storage and creates a document record visible by permission.',
+      submitLabel: 'Upload document',
       defaults: { building: buildingOptions[0] ?? buildingConfig.profile.name, title: 'Building update document', category: 'Building documents', visibility: 'Visible', url: '' },
       fields: [
         { name: 'building', label: 'Building', options: buildingOptions, required: true },
+        { name: 'file', label: 'File', type: 'file', required: true },
         { name: 'title', label: 'Document title', required: true },
         { name: 'category', label: 'Category', options: ['By-laws', 'Minutes', 'Levy notices', 'Insurance', 'Building documents'], required: true },
         { name: 'visibility', label: 'Visibility', options: ['Visible', 'Committee only'], required: true },
-        { name: 'url', label: 'Document URL', required: true }
+        { name: 'url', label: 'Fallback URL', required: false }
       ]
     },
     reportIssue: {
@@ -2261,7 +2248,7 @@ function ReportIssueList({ issues, managerView = false, actions }: { issues: Rep
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex flex-wrap gap-2">
               <Badge label={issue.severity} tone={issue.severity} />
-              <span className={`pill ${isNewRecord(issue) ? 'bg-blue-50 text-blue-700 ring-blue-200' : 'bg-slate-100 text-slate-600 ring-slate-200'}`}>{isNewRecord(issue) ? 'New' : 'Demo'}</span>
+              <span className={`pill ${isNewRecord(issue) ? 'bg-blue-50 text-blue-700 ring-blue-200' : 'bg-slate-100 text-slate-600 ring-slate-200'}`}>{isNewRecord(issue) ? 'NEW' : 'Seed'}</span>
             </div>
             <Badge label={issue.status} />
           </div>
@@ -2376,7 +2363,7 @@ function MaintenanceCards({ requests, contractorView = false, compact = false, o
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex flex-wrap gap-2">
               <Badge label={request.priority} tone={request.priority} />
-              <span className={`pill ${isNewRecord(request) ? 'bg-blue-50 text-blue-700 ring-blue-200' : 'bg-slate-100 text-slate-600 ring-slate-200'}`}>{isNewRecord(request) ? 'New' : 'Demo'}</span>
+              <span className={`pill ${isNewRecord(request) ? 'bg-blue-50 text-blue-700 ring-blue-200' : 'bg-slate-100 text-slate-600 ring-slate-200'}`}>{isNewRecord(request) ? 'NEW' : 'Seed'}</span>
             </div>
             <Badge label={request.overdue ? 'Overdue' : request.status} />
           </div>
@@ -2387,12 +2374,21 @@ function MaintenanceCards({ requests, contractorView = false, compact = false, o
             <MiniStat label="SLA" value={`${request.slaHours}h`} />
             <MiniStat label="Access" value={request.access.includes('Permission') ? 'Permitted' : 'By appointment'} />
           </div>
+          {request.timeline?.length ? (
+            <div className="mt-5 rounded-2xl bg-slate-50 p-4">
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Timeline</p>
+              <div className="mt-3 space-y-2">
+                {request.timeline.map((item) => (
+                  <p className="text-sm text-slate-600" key={item}>{item}</p>
+                ))}
+              </div>
+            </div>
+          ) : null}
           <div className="mt-5 flex flex-wrap gap-2">
             <button className="btn-secondary" onClick={() => onStatusUpdate?.(request.id, request.status === 'Closed' ? 'Under Review' : request.status)}><Eye size={16} /> Open details</button>
             {contractorView ? (
               <>
                 <button className="btn-secondary" onClick={() => onContractorUpdate?.(request.id, 'In Progress')}><MessageSquare size={16} /> Add update</button>
-                <ComingSoonButton label="Upload photo" />
                 <button className="btn-secondary" onClick={() => onContractorUpdate?.(request.id, 'In Progress')}>Mark in progress</button>
                 <button className="btn-secondary" onClick={() => onContractorUpdate?.(request.id, 'Completed')}>Mark completed</button>
               </>
@@ -2412,18 +2408,18 @@ function MaintenanceCards({ requests, contractorView = false, compact = false, o
 }
 
 function RecordTable({ records }: { records: SimpleRecord[] }) {
-  const [filter, setFilter] = useState<'All' | 'New' | 'Demo' | 'My Created Items'>('All');
+  const [filter, setFilter] = useState<'All' | 'New Records' | 'Seed Data' | 'My Records'>('All');
   const filteredRecords = records.filter((record) => {
-    if (filter === 'New') return isNewRecord(record);
-    if (filter === 'Demo') return !isNewRecord(record);
-    if (filter === 'My Created Items') return isNewRecord(record) || record.meta?.includes('Created in testing mode') || record.meta?.includes('Uploaded in testing mode');
+    if (filter === 'New Records') return isNewRecord(record);
+    if (filter === 'Seed Data') return !isNewRecord(record);
+    if (filter === 'My Records') return isNewRecord(record) || record.meta?.includes('Created in testing mode') || record.meta?.includes('Uploaded in testing mode');
     return true;
   });
 
   return (
     <div>
       <div className="mb-4 flex flex-wrap gap-2">
-        {(['All', 'New', 'Demo', 'My Created Items'] as const).map((option) => (
+        {(['All', 'New Records', 'Seed Data', 'My Records'] as const).map((option) => (
           <button key={option} className={`tab-button ${filter === option ? 'tab-button-active' : ''}`} onClick={() => setFilter(option)}>
             {option}
           </button>
@@ -2448,7 +2444,7 @@ function RecordTable({ records }: { records: SimpleRecord[] }) {
                   <div className="flex flex-wrap items-center gap-2">
                     <span>{record.title}</span>
                     <span className={`pill ${isNewRecord(record) ? 'bg-blue-50 text-blue-700 ring-blue-200' : 'bg-slate-100 text-slate-600 ring-slate-200'}`}>
-                      {isNewRecord(record) ? 'New' : 'Demo'}
+                      {isNewRecord(record) ? 'NEW' : 'Seed'}
                     </span>
                   </div>
                 </td>
@@ -2764,6 +2760,10 @@ function levyToPrivateRecord(levy: LevyRecord): SimpleRecord {
 function cleanActionMessage(message: string) {
   return message
     .replace('Using local seeded test account. Configure Supabase env vars to use Supabase Auth.', 'Workspace ready. Use Switch Role to test each Atlas experience.');
+}
+
+function stringPayload(payload: Record<string, string | File>) {
+  return Object.fromEntries(Object.entries(payload).filter(([, value]) => typeof value === 'string')) as Record<string, string>;
 }
 
 function isNewRecord(record: { id: string; meta?: string; due?: string }) {
