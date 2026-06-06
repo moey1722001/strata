@@ -1,4 +1,4 @@
-import { supabase, isSupabaseConfigured } from './supabase';
+import { supabase, isSupabaseConfigured, supabaseEnvStatus } from './supabase';
 import { auditLogs, buildingConfigurations, company, incidents, packages, testAccounts } from '../data';
 import type { BuildingConfiguration, MaintenanceRequest, Notice, Priority, ReportIssue, Role, SimpleRecord, TestAccount } from '../data';
 
@@ -50,6 +50,43 @@ type UserContext = {
   user: Profile;
   membership: any;
 };
+
+const requiredTables = [
+  'messages',
+  'notices',
+  'maintenance_requests',
+  'work_orders',
+  'documents',
+  'facility_bookings',
+  'notifications',
+  'audit_logs',
+  'building_settings'
+] as const;
+
+export async function runSupabaseDiagnostic(account: TestAccount | null): Promise<MvpActionResult> {
+  if (!isSupabaseConfigured || !supabase) {
+    return { ok: false, message: `Supabase diagnostic: Missing env vars (${supabaseEnvStatus.missing.join(', ') || 'unknown'}).` };
+  }
+
+  const auth = await supabase.auth.getSession();
+  if (auth.error) {
+    return { ok: false, message: `Supabase diagnostic: Invalid keys or auth session (${auth.error.message}).` };
+  }
+
+  if (account) {
+    const signIn = await signInTestAccount(account);
+    if (!signIn.ok) return { ok: false, message: `Supabase diagnostic: Invalid keys or test login blocked (${signIn.message}).` };
+  }
+
+  for (const table of requiredTables) {
+    const result = await supabase.from(table).select('*', { count: 'exact', head: true }).limit(1);
+    if (result.error) {
+      return { ok: false, message: `Supabase diagnostic: ${classifySupabaseError(result.error)} while checking ${table} (${result.error.message}).` };
+    }
+  }
+
+  return { ok: true, message: 'Supabase diagnostic: Connected. Env vars loaded, required tables reachable, and scoped RLS read checks passed.' };
+}
 
 export async function loadMvpData(account: TestAccount | null, role: Role): Promise<MvpData> {
   if (!isSupabaseConfigured || !supabase || !account) return emptyData;
@@ -159,6 +196,32 @@ export async function signInTestAccount(account: TestAccount): Promise<MvpAction
   const result = await supabase.auth.signInWithPassword({ email: account.email, password });
   if (result.error) return { ok: false, message: result.error.message };
   return { ok: true, message: 'Signed in with Supabase Auth.' };
+}
+
+export async function updateBuildingConfiguration(account: TestAccount | null, config: BuildingConfiguration, action = 'UPDATE_BUILDING_SETTINGS'): Promise<MvpActionResult> {
+  const context = await requireUserContext(account);
+  if (!context.ok) return context;
+  const { user, membership } = context;
+
+  const update = await supabase!.from('building_settings').update({
+    profile: config.profile,
+    facilities: config.facilities,
+    contacts: config.contacts,
+    issue_categories: config.issueCategories,
+    renovation_rules: config.renovationRules,
+    package_management: config.packageManagement,
+    compliance_items: config.compliance,
+    assets: config.assets,
+    resident_permissions: config.residentPermissions,
+    notification_rules: config.notificationRules,
+    updated_at: new Date().toISOString()
+  }).eq('local_key', config.buildingId).select('id, building_id').maybeSingle();
+
+  if (update.error) return { ok: false, message: update.error.message };
+  if (!update.data) return { ok: false, message: 'Building settings row not found. Apply the building_settings Supabase migration first.' };
+
+  await insertAudit(membership.company_id, update.data.building_id, user.id, action, 'building_settings', update.data.id);
+  return { ok: true, message: 'Building settings saved in Supabase.' };
 }
 
 export async function createResidentIssue(account: TestAccount | null, payload?: Partial<ReportIssue> & { description?: string }): Promise<MvpActionResult> {
@@ -534,6 +597,14 @@ async function notifyContractor(companyId: string, buildingId: string, contracto
 async function insertNotification(companyId: string, buildingId: string, userId: string, eventType: string, title: string, body: string) {
   if (!supabase) return;
   await supabase.from('notifications').insert({ company_id: companyId, building_id: buildingId, user_id: userId, event_type: eventType, title, body, channels: ['in-app', 'email'] });
+}
+
+function classifySupabaseError(error: { code?: string; message?: string }) {
+  const message = error.message?.toLowerCase() ?? '';
+  if (error.code === '42P01' || message.includes('does not exist')) return 'Table missing';
+  if (error.code === '42501' || message.includes('row-level security') || message.includes('permission denied')) return 'RLS blocked';
+  if (message.includes('invalid jwt') || message.includes('jwt') || message.includes('api key')) return 'Invalid keys';
+  return 'Connection error';
 }
 
 function mapNotice(row: any): Notice {

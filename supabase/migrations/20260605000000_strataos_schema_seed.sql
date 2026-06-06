@@ -804,9 +804,9 @@ join lots on lots.lot_number = (gs + 5)::text;
 insert into incidents (company_id, building_id, occurred_at, location, incident_type, description, severity, insurance_claim_reference, status)
 values
   ('00000000-0000-4000-8000-000000000001','00000000-0000-4000-8000-000000000101',now() - interval '2 days','Basement B2','Water leak','Stormwater ingress after heavy rain.','High','CLM-2026-118','Open'),
-  ('00000000-0000-4000-8000-000000000104',now() - interval '1 day','Lobby','Security incident','Tailgating complaint and CCTV review.','Medium',null,'In progress'),
-  ('00000000-0000-4000-8000-000000000102',now() - interval '4 days','Fire stair 2','WHS event','Trip hazard reported on stair nosing.','High',null,'Open'),
-  ('00000000-0000-4000-8000-000000000103',now() - interval '7 days','Ground floor','Property damage','Common property glass damage.','Low','CLM-2026-102','Closed');
+  ('00000000-0000-4000-8000-000000000001','00000000-0000-4000-8000-000000000104',now() - interval '1 day','Lobby','Security incident','Tailgating complaint and CCTV review.','Medium',null,'In progress'),
+  ('00000000-0000-4000-8000-000000000001','00000000-0000-4000-8000-000000000102',now() - interval '4 days','Fire stair 2','WHS event','Trip hazard reported on stair nosing.','High',null,'Open'),
+  ('00000000-0000-4000-8000-000000000001','00000000-0000-4000-8000-000000000103',now() - interval '7 days','Ground floor','Property damage','Common property glass damage.','Low','CLM-2026-102','Closed');
 
 insert into meetings (company_id, building_id, meeting_type, starts_at, location, online_link, agenda)
 values

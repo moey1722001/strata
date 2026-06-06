@@ -4,6 +4,14 @@ const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
 
 export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey);
+export const supabaseEnvStatus = {
+  hasUrl: Boolean(supabaseUrl),
+  hasAnonKey: Boolean(supabaseAnonKey),
+  missing: [
+    ...(!supabaseUrl ? ['VITE_SUPABASE_URL'] : []),
+    ...(!supabaseAnonKey ? ['VITE_SUPABASE_ANON_KEY'] : [])
+  ]
+};
 
 export const supabase = isSupabaseConfigured
   ? createClient(supabaseUrl!, supabaseAnonKey!, {
@@ -13,4 +21,3 @@ export const supabase = isSupabaseConfigured
       }
     })
   : null;
-

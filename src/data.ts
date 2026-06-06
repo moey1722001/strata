@@ -125,6 +125,7 @@ export type BuildingContact = {
   name: string;
   detail: string;
   visibility: 'all residents' | 'committee only' | 'managers only';
+  status?: 'active' | 'inactive';
 };
 
 export type BuildingIssueCategory = {

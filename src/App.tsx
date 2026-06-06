@@ -69,10 +69,12 @@ import {
   createNotice,
   createResidentIssue,
   loadMvpData,
+  runSupabaseDiagnostic,
   sendResidentMessage,
   signInTestAccount,
   submitRenovation,
   updateFacilityBooking,
+  updateBuildingConfiguration,
   updateMaintenanceRequestStatus,
   updateReportIssueStatus,
   updateRenovationStatus,
@@ -124,6 +126,7 @@ type FlowActions = {
   requestRenovationInfo: (id: string) => Promise<void>;
   updateFacilityBooking: (id: string, status: string) => Promise<void>;
   recordIncidentUpdate: (id: string) => Promise<void>;
+  saveBuildingConfig: (config: BuildingConfiguration, action: string) => Promise<void>;
 };
 
 type FormKind =
@@ -200,9 +203,21 @@ function App() {
 
   useEffect(() => {
     if (!currentAccount) return;
-    loadMvpData(currentAccount, role)
-      .then(setMvpData)
-      .catch((error) => setActionStatus(error instanceof Error ? error.message : 'Could not load Supabase data.'));
+    let active = true;
+    async function loadWorkspace() {
+      try {
+        const diagnostic = await runSupabaseDiagnostic(currentAccount);
+        if (active) setActionStatus(diagnostic.message);
+        const latest = await loadMvpData(currentAccount, role);
+        if (active) setMvpData(latest);
+      } catch (error) {
+        if (active) setActionStatus(error instanceof Error ? error.message : 'Could not load Supabase data.');
+      }
+    }
+    void loadWorkspace();
+    return () => {
+      active = false;
+    };
   }, [currentAccount, role]);
 
   async function loginAs(account: TestAccount) {
@@ -214,10 +229,12 @@ function App() {
     setActionStatus(result.message);
   }
 
-  function switchRole(nextRole: Role) {
+  async function switchRole(nextRole: Role) {
     const nextAccount = testAccounts.find((account) => account.role === nextRole) ?? currentAccount;
     if (nextAccount) {
       setCurrentAccount(nextAccount);
+      const result = await signInTestAccount(nextAccount);
+      setActionStatus(result.ok ? `Role switched. ${result.message}` : result.message);
     }
     setRole(nextRole);
     setPage(defaultPageForRole(nextRole));
@@ -249,7 +266,8 @@ function App() {
     approveRenovation: (id: string) => runAction(() => updateRenovationStatus(currentAccount, id, 'Approved', 'Approved with standard noise conditions')),
     requestRenovationInfo: (id: string) => runAction(() => updateRenovationStatus(currentAccount, id, 'More Info Required', 'Acoustic certificate and contractor insurance requested')),
     updateFacilityBooking: (id: string, status: string) => runAction(() => updateFacilityBooking(currentAccount, id, status)),
-    recordIncidentUpdate: (_id: string) => runAction(() => Promise.resolve({ ok: false, message: 'Incident persistence is not part of this Supabase pass yet.' }))
+    recordIncidentUpdate: (_id: string) => runAction(() => Promise.resolve({ ok: false, message: 'Incident persistence is not part of this Supabase pass yet.' })),
+    saveBuildingConfig: (config: BuildingConfiguration, action: string) => runAction(() => updateBuildingConfiguration(currentAccount, config, action))
   };
 
   async function submitWorkflowForm(payload: Record<string, string>, context?: FormContext) {
@@ -563,7 +581,7 @@ function PageRouter({ page, role, onNavigate, data, actions, buildingConfig }: {
   if (page === 'packages' && role === 'resident') return <PackagesPage role={role} data={data} buildingConfig={buildingConfig} />;
   if (page === 'incidents') return <IncidentsPage role={role} data={data} actions={actions} />;
   if (page === 'compliance') return <CompliancePage role={role} buildingConfig={buildingConfig} />;
-  if (page === 'building_settings' && role === 'manager') return <BuildingSettingsPage buildingConfig={buildingConfig} />;
+  if (page === 'building_settings' && role === 'manager') return <BuildingSettingsPage buildingConfig={buildingConfig} actions={actions} />;
   if (page === 'staff_performance') return <PerformancePage title="Staff Performance" eyebrow="Portfolio workload and response health" records={staffPerformanceRecords()} />;
   if (page === 'contractor_performance') return <PerformancePage title="Contractor Performance" eyebrow="Response time, compliance and job quality" records={contractorPerformanceRecords()} />;
   if (page === 'arrears_overview') return <LevyManagementPage role="portfolio_admin" />;
@@ -1362,9 +1380,129 @@ function CompliancePage({ role, buildingConfig }: { role: Role; buildingConfig: 
   );
 }
 
-function BuildingSettingsPage({ buildingConfig }: { buildingConfig: BuildingConfiguration }) {
+type SettingFormKind = 'facility' | 'contact' | 'issueCategory' | 'packageManagement' | 'renovationRule';
+
+type ActiveSettingForm = {
+  kind: SettingFormKind;
+  id?: string;
+};
+
+function BuildingSettingsPage({ buildingConfig, actions }: { buildingConfig: BuildingConfiguration; actions: FlowActions }) {
   const tabs = ['Profile', 'Facilities', 'Contacts / Directory', 'Issue Categories', 'Renovation Rules', 'Package Management', 'Compliance Items', 'Assets', 'Resident Permissions', 'Notification Rules'] as const;
   const [activeTab, setActiveTab] = useState<typeof tabs[number]>('Profile');
+  const [activeSettingForm, setActiveSettingForm] = useState<ActiveSettingForm | null>(null);
+
+  async function saveConfig(nextConfig: BuildingConfiguration, action: string) {
+    await actions.saveBuildingConfig(nextConfig, action);
+    setActiveSettingForm(null);
+  }
+
+  function updateFacilities(id: string, patch: Partial<BuildingConfiguration['facilities'][number]>, action: string) {
+    const nextConfig = {
+      ...buildingConfig,
+      facilities: buildingConfig.facilities.map((facility) => facility.id === id ? { ...facility, ...patch } : facility)
+    };
+    void saveConfig(nextConfig, action);
+  }
+
+  function updateContacts(id: string, patch: Partial<BuildingContact>, action: string) {
+    const nextConfig = {
+      ...buildingConfig,
+      contacts: buildingConfig.contacts.map((contact) => contact.id === id ? { ...contact, ...patch } : contact)
+    };
+    void saveConfig(nextConfig, action);
+  }
+
+  function updateIssueCategory(id: string, patch: Partial<BuildingConfiguration['issueCategories'][number]>, action: string) {
+    const nextConfig = {
+      ...buildingConfig,
+      issueCategories: buildingConfig.issueCategories.map((category) => category.id === id ? { ...category, ...patch } : category)
+    };
+    void saveConfig(nextConfig, action);
+  }
+
+  function updateRenovationRule(id: string, patch: Partial<BuildingConfiguration['renovationRules'][number]>, action: string) {
+    const nextConfig = {
+      ...buildingConfig,
+      renovationRules: buildingConfig.renovationRules.map((rule) => rule.id === id ? { ...rule, ...patch } : rule)
+    };
+    void saveConfig(nextConfig, action);
+  }
+
+  async function submitSettingForm(kind: SettingFormKind, values: Record<string, string>, id?: string) {
+    if (kind === 'facility') {
+      const facility = {
+        id: id ?? createConfigId(buildingConfig.buildingId, 'facility'),
+        name: values.name,
+        description: values.description,
+        location: values.location,
+        availability: values.availability,
+        maxBookingLength: values.maxBookingLength,
+        advanceNotice: values.advanceNotice,
+        approvalRequired: values.approvalRequired === 'Yes',
+        feePlaceholder: values.feePlaceholder,
+        capacity: Number(values.capacity) || 1,
+        rules: values.rules,
+        visibility: values.visibility as BuildingConfiguration['facilities'][number]['visibility'],
+        status: values.status as BuildingConfiguration['facilities'][number]['status']
+      };
+      const nextFacilities = id ? buildingConfig.facilities.map((item) => item.id === id ? facility : item) : [facility, ...buildingConfig.facilities];
+      await saveConfig({ ...buildingConfig, facilities: nextFacilities }, id ? 'UPDATE_BUILDING_FACILITY' : 'ADD_BUILDING_FACILITY');
+    }
+
+    if (kind === 'contact') {
+      const contact: BuildingContact = {
+        id: id ?? createConfigId(buildingConfig.buildingId, 'contact'),
+        type: values.type,
+        name: values.name,
+        detail: values.detail,
+        visibility: values.visibility as BuildingContact['visibility'],
+        status: values.status as BuildingContact['status']
+      };
+      const nextContacts = id ? buildingConfig.contacts.map((item) => item.id === id ? contact : item) : [contact, ...buildingConfig.contacts];
+      await saveConfig({ ...buildingConfig, contacts: nextContacts }, id ? 'UPDATE_BUILDING_CONTACT' : 'ADD_BUILDING_CONTACT');
+    }
+
+    if (kind === 'issueCategory') {
+      const issueCategory = {
+        id: id ?? createConfigId(buildingConfig.buildingId, 'issue'),
+        label: values.label,
+        enabled: values.enabled === 'Yes',
+        defaultPriority: values.defaultPriority as Priority,
+        defaultContractorId: values.defaultContractorId || undefined
+      };
+      const nextCategories = id ? buildingConfig.issueCategories.map((item) => item.id === id ? issueCategory : item) : [issueCategory, ...buildingConfig.issueCategories];
+      await saveConfig({ ...buildingConfig, issueCategories: nextCategories }, id ? 'UPDATE_ISSUE_CATEGORY' : 'ADD_ISSUE_CATEGORY');
+    }
+
+    if (kind === 'packageManagement') {
+      await saveConfig({
+        ...buildingConfig,
+        packageManagement: {
+          enabled: values.enabled === 'Yes',
+          collectionLocation: values.collectionLocation,
+          collectionHours: values.collectionHours,
+          idRequired: values.idRequired === 'Yes',
+          notificationRules: values.notificationRules
+        }
+      }, 'UPDATE_PACKAGE_MANAGEMENT');
+    }
+
+    if (kind === 'renovationRule') {
+      const rule = {
+        id: id ?? createConfigId(buildingConfig.buildingId, 'renovation'),
+        type: values.type,
+        enabled: values.enabled === 'Yes',
+        requiredDocuments: splitCsv(values.requiredDocuments),
+        acknowledgements: splitCsv(values.acknowledgements),
+        approvalPathway: values.approvalPathway,
+        committeeReviewRequired: values.committeeReviewRequired === 'Yes',
+        noiseRules: values.noiseRules
+      };
+      const nextRules = id ? buildingConfig.renovationRules.map((item) => item.id === id ? rule : item) : [rule, ...buildingConfig.renovationRules];
+      await saveConfig({ ...buildingConfig, renovationRules: nextRules }, id ? 'UPDATE_RENOVATION_TYPE' : 'ADD_RENOVATION_TYPE');
+    }
+  }
 
   const recordsByTab: Record<typeof activeTab, SimpleRecord[]> = {
     Profile: [{
@@ -1445,10 +1583,365 @@ function BuildingSettingsPage({ buildingConfig }: { buildingConfig: BuildingConf
             </button>
           ))}
         </div>
-        <RecordTable records={recordsByTab[activeTab]} />
+        {activeTab === 'Facilities' ? (
+          <EditableSettingsSection
+            title="Facilities residents can book"
+            addLabel="Add facility"
+            onAdd={() => setActiveSettingForm({ kind: 'facility' })}
+            records={buildingConfig.facilities.map((facility) => ({
+              id: facility.id,
+              title: facility.name,
+              buildingId: buildingConfig.buildingId,
+              owner: facility.location,
+              status: facility.status,
+              meta: `${facility.availability} · ${facility.visibility} · ${facility.rules}`
+            }))}
+            renderActions={(record) => {
+              const facility = buildingConfig.facilities.find((item) => item.id === record.id);
+              if (!facility) return null;
+              return (
+                <>
+                  <button className="btn-secondary" onClick={() => setActiveSettingForm({ kind: 'facility', id: facility.id })}>Edit</button>
+                  <button className="btn-secondary" onClick={() => updateFacilities(facility.id, { status: facility.status === 'active' ? 'inactive' : 'active' }, 'TOGGLE_BUILDING_FACILITY')}>
+                    {facility.status === 'active' ? 'Deactivate' : 'Activate'}
+                  </button>
+                </>
+              );
+            }}
+          />
+        ) : activeTab === 'Contacts / Directory' ? (
+          <EditableSettingsSection
+            title="Directory contacts residents can see"
+            addLabel="Add contact"
+            onAdd={() => setActiveSettingForm({ kind: 'contact' })}
+            records={buildingConfig.contacts.map((contact) => contactToRecord(contact, buildingConfig.buildingId))}
+            renderActions={(record) => {
+              const contact = buildingConfig.contacts.find((item) => item.id === record.id);
+              if (!contact) return null;
+              return (
+                <>
+                  <button className="btn-secondary" onClick={() => setActiveSettingForm({ kind: 'contact', id: contact.id })}>Edit</button>
+                  <button className="btn-secondary" onClick={() => updateContacts(contact.id, { status: contact.status === 'inactive' ? 'active' : 'inactive' }, 'TOGGLE_BUILDING_CONTACT')}>
+                    {contact.status === 'inactive' ? 'Activate' : 'Deactivate'}
+                  </button>
+                </>
+              );
+            }}
+          />
+        ) : activeTab === 'Issue Categories' ? (
+          <EditableSettingsSection
+            title="Report Issue categories"
+            addLabel="Add category"
+            onAdd={() => setActiveSettingForm({ kind: 'issueCategory' })}
+            records={buildingConfig.issueCategories.map((category) => ({
+              id: category.id,
+              title: category.label,
+              buildingId: buildingConfig.buildingId,
+              owner: category.defaultContractorId ?? 'No default contractor',
+              status: category.enabled ? 'Enabled' : 'Disabled',
+              priority: category.defaultPriority,
+              meta: `Default priority: ${category.defaultPriority}`
+            }))}
+            renderActions={(record) => {
+              const category = buildingConfig.issueCategories.find((item) => item.id === record.id);
+              if (!category) return null;
+              return (
+                <>
+                  <button className="btn-secondary" onClick={() => setActiveSettingForm({ kind: 'issueCategory', id: category.id })}>Edit</button>
+                  <button className="btn-secondary" onClick={() => updateIssueCategory(category.id, { enabled: !category.enabled }, 'TOGGLE_ISSUE_CATEGORY')}>
+                    {category.enabled ? 'Deactivate' : 'Activate'}
+                  </button>
+                </>
+              );
+            }}
+          />
+        ) : activeTab === 'Package Management' ? (
+          <EditableSettingsSection
+            title="Package management"
+            addLabel="Edit package settings"
+            onAdd={() => setActiveSettingForm({ kind: 'packageManagement' })}
+            records={recordsByTab['Package Management']}
+            renderActions={() => (
+              <>
+                <button className="btn-secondary" onClick={() => setActiveSettingForm({ kind: 'packageManagement' })}>Edit</button>
+                <button
+                  className="btn-secondary"
+                  onClick={() => saveConfig({ ...buildingConfig, packageManagement: { ...buildingConfig.packageManagement, enabled: !buildingConfig.packageManagement.enabled } }, 'TOGGLE_PACKAGE_MANAGEMENT')}
+                >
+                  {buildingConfig.packageManagement.enabled ? 'Disable' : 'Enable'}
+                </button>
+              </>
+            )}
+          />
+        ) : activeTab === 'Renovation Rules' ? (
+          <EditableSettingsSection
+            title="Renovation request types"
+            addLabel="Add renovation type"
+            onAdd={() => setActiveSettingForm({ kind: 'renovationRule' })}
+            records={recordsByTab['Renovation Rules']}
+            renderActions={(record) => {
+              const rule = buildingConfig.renovationRules.find((item) => item.id === record.id);
+              if (!rule) return null;
+              return (
+                <>
+                  <button className="btn-secondary" onClick={() => setActiveSettingForm({ kind: 'renovationRule', id: rule.id })}>Edit</button>
+                  <button className="btn-secondary" onClick={() => updateRenovationRule(rule.id, { enabled: !rule.enabled }, 'TOGGLE_RENOVATION_TYPE')}>
+                    {rule.enabled ? 'Deactivate' : 'Activate'}
+                  </button>
+                </>
+              );
+            }}
+          />
+        ) : (
+          <RecordTable records={recordsByTab[activeTab]} />
+        )}
       </Panel>
+      <SettingsEditModal
+        activeForm={activeSettingForm}
+        buildingConfig={buildingConfig}
+        onClose={() => setActiveSettingForm(null)}
+        onSubmit={submitSettingForm}
+      />
     </div>
   );
+}
+
+function EditableSettingsSection({
+  title,
+  addLabel,
+  records,
+  onAdd,
+  renderActions
+}: {
+  title: string;
+  addLabel: string;
+  records: SimpleRecord[];
+  onAdd: () => void;
+  renderActions: (record: SimpleRecord) => ReactNode;
+}) {
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="text-sm text-slate-500">Changes save to Supabase and drive resident workflows for this building.</p>
+        <button className="btn-primary" onClick={onAdd}><Plus size={17} /> {addLabel}</button>
+      </div>
+      <div className="grid gap-4 lg:grid-cols-2">
+        {records.map((record) => (
+          <article className="rounded-3xl border border-line bg-white p-5 shadow-soft" key={record.id}>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h3 className="font-semibold">{record.title}</h3>
+                <p className="mt-1 text-sm text-slate-500">{record.owner}</p>
+              </div>
+              <Badge label={record.status} tone={record.priority} />
+            </div>
+            <p className="mt-3 text-sm leading-6 text-slate-600">{record.meta}</p>
+            <div className="mt-4 flex flex-wrap gap-2">
+              {renderActions(record)}
+            </div>
+          </article>
+        ))}
+      </div>
+      {!records.length && <EmptyState title={`No ${title.toLowerCase()} configured`} copy="Add the first record to make it available to residents for this building." />}
+    </div>
+  );
+}
+
+function SettingsEditModal({
+  activeForm,
+  buildingConfig,
+  onClose,
+  onSubmit
+}: {
+  activeForm: ActiveSettingForm | null;
+  buildingConfig: BuildingConfiguration;
+  onClose: () => void;
+  onSubmit: (kind: SettingFormKind, values: Record<string, string>, id?: string) => Promise<void>;
+}) {
+  const [values, setValues] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    setValues({});
+  }, [activeForm?.kind, activeForm?.id]);
+
+  if (!activeForm) return null;
+
+  const currentForm = activeForm;
+  const config = settingsFormConfig(activeForm, buildingConfig);
+  const formValues = { ...config.defaults, ...values };
+
+  function updateValue(name: string, value: string) {
+    setValues((current) => ({ ...current, [name]: value }));
+  }
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await onSubmit(currentForm.kind, formValues, currentForm.id);
+    setValues({});
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/45 px-4 py-6">
+      <form className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-3xl border border-line bg-white p-6 shadow-2xl" onSubmit={submit}>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-sm font-semibold uppercase tracking-wide text-harbour">Building Settings</p>
+            <h2 className="mt-2 text-2xl font-semibold">{config.title}</h2>
+            <p className="mt-2 text-sm text-slate-500">{config.copy}</p>
+          </div>
+          <button type="button" className="icon-button" onClick={onClose} aria-label="Close settings form">
+            <X size={18} />
+          </button>
+        </div>
+        <div className="mt-6 grid gap-4 sm:grid-cols-2">
+          {config.fields.map((field) => (
+            <label className={field.type === 'textarea' ? 'sm:col-span-2' : ''} key={field.name}>
+              <span className="text-sm font-medium text-slate-600">{field.label}</span>
+              {field.type === 'textarea' ? (
+                <textarea className="mt-2 min-h-28 w-full rounded-2xl border border-line px-4 py-3 outline-none focus:border-harbour" value={formValues[field.name] ?? ''} onChange={(event) => updateValue(field.name, event.target.value)} required={field.required} />
+              ) : field.options ? (
+                <select className="mt-2 w-full rounded-2xl border border-line px-4 py-3 outline-none focus:border-harbour" value={formValues[field.name] ?? field.options[0]} onChange={(event) => updateValue(field.name, event.target.value)} required={field.required}>
+                  {field.options.map((option) => <option key={option} value={option}>{option}</option>)}
+                </select>
+              ) : (
+                <input className="mt-2 w-full rounded-2xl border border-line px-4 py-3 outline-none focus:border-harbour" value={formValues[field.name] ?? ''} onChange={(event) => updateValue(field.name, event.target.value)} required={field.required} />
+              )}
+            </label>
+          ))}
+        </div>
+        <div className="mt-6 flex flex-wrap justify-end gap-3">
+          <button type="button" className="btn-secondary" onClick={onClose}>Cancel</button>
+          <button type="submit" className="btn-primary">Save settings</button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function settingsFormConfig(activeForm: ActiveSettingForm, buildingConfig: BuildingConfiguration): { title: string; copy: string; defaults: Record<string, string>; fields: FormField[] } {
+  if (activeForm.kind === 'facility') {
+    const facility = buildingConfig.facilities.find((item) => item.id === activeForm.id);
+    return {
+      title: facility ? 'Edit facility' : 'Add facility',
+      copy: 'Active facilities appear instantly in resident Facility Bookings for this building.',
+      defaults: {
+        name: facility?.name ?? '',
+        description: facility?.description ?? '',
+        location: facility?.location ?? '',
+        availability: facility?.availability ?? 'Mon-Fri 9am-5pm',
+        maxBookingLength: facility?.maxBookingLength ?? '2 hours',
+        advanceNotice: facility?.advanceNotice ?? '24 hours',
+        approvalRequired: facility?.approvalRequired ? 'Yes' : 'No',
+        feePlaceholder: facility?.feePlaceholder ?? 'No fee',
+        capacity: String(facility?.capacity ?? 1),
+        rules: facility?.rules ?? '',
+        visibility: facility?.visibility ?? 'all residents',
+        status: facility?.status ?? 'active'
+      },
+      fields: [
+        { name: 'name', label: 'Facility name', required: true },
+        { name: 'location', label: 'Location', required: true },
+        { name: 'description', label: 'Description', type: 'textarea', required: true },
+        { name: 'availability', label: 'Availability days/times', required: true },
+        { name: 'maxBookingLength', label: 'Max booking length', required: true },
+        { name: 'advanceNotice', label: 'Advance notice required', required: true },
+        { name: 'approvalRequired', label: 'Approval required', options: ['Yes', 'No'], required: true },
+        { name: 'feePlaceholder', label: 'Deposit/fee placeholder' },
+        { name: 'capacity', label: 'Capacity', required: true },
+        { name: 'visibility', label: 'Visibility', options: ['all residents', 'owners only', 'tenants allowed', 'committee only'], required: true },
+        { name: 'status', label: 'Status', options: ['active', 'inactive'], required: true },
+        { name: 'rules', label: 'Booking rules/instructions', type: 'textarea', required: true }
+      ]
+    };
+  }
+
+  if (activeForm.kind === 'contact') {
+    const contact = buildingConfig.contacts.find((item) => item.id === activeForm.id);
+    return {
+      title: contact ? 'Edit directory contact' : 'Add directory contact',
+      copy: 'Active visible contacts appear instantly in the resident Building Directory.',
+      defaults: {
+        type: contact?.type ?? 'Building manager',
+        name: contact?.name ?? '',
+        detail: contact?.detail ?? '',
+        visibility: contact?.visibility ?? 'all residents',
+        status: contact?.status ?? 'active'
+      },
+      fields: [
+        { name: 'type', label: 'Contact type', required: true },
+        { name: 'name', label: 'Name', required: true },
+        { name: 'detail', label: 'Phone, email, or instructions', required: true },
+        { name: 'visibility', label: 'Visibility', options: ['all residents', 'committee only', 'managers only'], required: true },
+        { name: 'status', label: 'Status', options: ['active', 'inactive'], required: true }
+      ]
+    };
+  }
+
+  if (activeForm.kind === 'issueCategory') {
+    const category = buildingConfig.issueCategories.find((item) => item.id === activeForm.id);
+    return {
+      title: category ? 'Edit issue category' : 'Add issue category',
+      copy: 'Enabled categories appear instantly in the resident Report Issue flow.',
+      defaults: {
+        label: category?.label ?? '',
+        enabled: category?.enabled === false ? 'No' : 'Yes',
+        defaultPriority: category?.defaultPriority ?? 'Medium',
+        defaultContractorId: category?.defaultContractorId ?? ''
+      },
+      fields: [
+        { name: 'label', label: 'Category label', required: true },
+        { name: 'enabled', label: 'Enabled', options: ['Yes', 'No'], required: true },
+        { name: 'defaultPriority', label: 'Default priority', options: ['Low', 'Medium', 'High', 'Emergency'], required: true },
+        { name: 'defaultContractorId', label: 'Default contractor placeholder' }
+      ]
+    };
+  }
+
+  if (activeForm.kind === 'packageManagement') {
+    const settings = buildingConfig.packageManagement;
+    return {
+      title: 'Edit package management',
+      copy: 'When disabled, package navigation and dashboard widgets are hidden for residents in this building.',
+      defaults: {
+        enabled: settings.enabled ? 'Yes' : 'No',
+        collectionLocation: settings.collectionLocation ?? '',
+        collectionHours: settings.collectionHours ?? '',
+        idRequired: settings.idRequired ? 'Yes' : 'No',
+        notificationRules: settings.notificationRules ?? ''
+      },
+      fields: [
+        { name: 'enabled', label: 'Package management enabled', options: ['Yes', 'No'], required: true },
+        { name: 'collectionLocation', label: 'Collection location' },
+        { name: 'collectionHours', label: 'Collection instructions/hours' },
+        { name: 'idRequired', label: 'ID required', options: ['Yes', 'No'], required: true },
+        { name: 'notificationRules', label: 'Resident instructions', type: 'textarea' }
+      ]
+    };
+  }
+
+  const rule = buildingConfig.renovationRules.find((item) => item.id === activeForm.id);
+  return {
+    title: rule ? 'Edit renovation type' : 'Add renovation type',
+    copy: 'Enabled request types appear instantly in the resident Renovation Request form.',
+    defaults: {
+      type: rule?.type ?? '',
+      enabled: rule?.enabled === false ? 'No' : 'Yes',
+      requiredDocuments: rule?.requiredDocuments.join(', ') ?? '',
+      acknowledgements: rule?.acknowledgements.join(', ') ?? 'By-law acknowledgement',
+      approvalPathway: rule?.approvalPathway ?? 'Manager review',
+      committeeReviewRequired: rule?.committeeReviewRequired ? 'Yes' : 'No',
+      noiseRules: rule?.noiseRules ?? ''
+    },
+    fields: [
+      { name: 'type', label: 'Renovation type', required: true },
+      { name: 'enabled', label: 'Enabled', options: ['Yes', 'No'], required: true },
+      { name: 'requiredDocuments', label: 'Required documents/checklist', type: 'textarea', required: true },
+      { name: 'acknowledgements', label: 'Required acknowledgements', type: 'textarea' },
+      { name: 'approvalPathway', label: 'Approval pathway', required: true },
+      { name: 'committeeReviewRequired', label: 'Committee review required', options: ['Yes', 'No'], required: true },
+      { name: 'noiseRules', label: 'Noise rules', type: 'textarea' }
+    ]
+  };
 }
 
 function IncidentsPage({ role, data, actions }: { role: Role; data: MvpData; actions: FlowActions }) {
@@ -2076,6 +2569,7 @@ function activeRenovationRules(config: BuildingConfiguration) {
 
 function visibleContacts(config: BuildingConfiguration, role: Role) {
   return config.contacts.filter((contact) => {
+    if (contact.status === 'inactive') return false;
     if (role === 'manager' || role === 'portfolio_admin' || role === 'super_admin') return true;
     if (role === 'committee') return contact.visibility !== 'managers only';
     return contact.visibility === 'all residents';
@@ -2088,9 +2582,18 @@ function contactToRecord(contact: BuildingContact, buildingId: string): SimpleRe
     title: contact.type,
     buildingId,
     owner: contact.name,
-    status: contact.visibility,
+    status: contact.status === 'inactive' ? 'inactive' : 'active',
     meta: contact.detail
   };
+}
+
+function createConfigId(buildingId: string, prefix: string) {
+  const random = typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID().slice(0, 8) : Date.now().toString(36);
+  return `${buildingId}-${prefix}-${random}`;
+}
+
+function splitCsv(value: string) {
+  return value.split(',').map((item) => item.trim()).filter(Boolean);
 }
 
 function assetToRecord(asset: BuildingConfiguration['assets'][number]): SimpleRecord {
