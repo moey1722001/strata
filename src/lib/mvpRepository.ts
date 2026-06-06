@@ -403,9 +403,12 @@ export async function sendResidentMessage(account: TestAccount | null, payload?:
   const recipientEmail = account?.role === 'manager' ? 'resident@example.com' : 'manager@northshorestrata.com.au';
   const recipient = await findUserByEmail(recipientEmail);
   if (!recipient) return { ok: false, message: 'Message recipient profile not found.' };
+  const recipientMembership = account?.role === 'manager' ? await firstMembership(recipient.id) : null;
+  const messageCompanyId = recipientMembership?.company_id ?? membership.company_id;
+  const messageBuildingId = recipientMembership?.building_id ?? membership.building_id;
   const message = await supabase!.from('messages').insert({
-    company_id: membership.company_id,
-    building_id: membership.building_id,
+    company_id: messageCompanyId,
+    building_id: messageBuildingId,
     sender_id: user.id,
     recipient_id: recipient.id,
     channel: 'resident-manager',
@@ -413,8 +416,8 @@ export async function sendResidentMessage(account: TestAccount | null, payload?:
     body: payload?.meta ?? 'Message created in Atlas.'
   }).select('id').single();
   if (message.error) return { ok: false, message: message.error.message };
-  await insertNotification(membership.company_id, membership.building_id, recipient.id, 'message_created', 'New message', payload?.title ?? 'A new message is available.');
-  await insertAudit(membership.company_id, membership.building_id, user.id, 'SEND_MESSAGE', 'messages', message.data.id);
+  await insertNotification(messageCompanyId, messageBuildingId, recipient.id, 'message_created', 'New message', payload?.title ?? 'A new message is available.');
+  await insertAudit(messageCompanyId, messageBuildingId, user.id, 'SEND_MESSAGE', 'messages', message.data.id);
   return { ok: true, message: 'Message saved in Supabase.' };
 }
 
