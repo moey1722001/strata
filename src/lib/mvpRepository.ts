@@ -539,6 +539,19 @@ export async function createNotice(account: TestAccount | null, payload?: Partia
   return { ok: true, message: (payload?.publicationStatus ?? 'Published') === 'Draft' ? 'Notice saved as draft.' : 'Notice published.' };
 }
 
+export async function publishNotice(account: TestAccount | null, id: string): Promise<MvpActionResult> {
+  const context = await requireUserContext(account);
+  if (!context.ok) return context;
+  const { user } = context;
+  const existing = await supabase!.from('notices').select('*').eq('id', id).maybeSingle();
+  if (!existing.data) return { ok: false, message: 'Notice not found.' };
+  const update = await supabase!.from('notices').update({ publication_status: 'Published' }).eq('id', id);
+  if (update.error) return { ok: false, message: update.error.message };
+  await notifyRole(existing.data.company_id, existing.data.building_id, 'resident', 'notice_created', 'New building notice', existing.data.title);
+  await insertAudit(existing.data.company_id, existing.data.building_id, user.id, 'PUBLISH_NOTICE', 'notices', id);
+  return { ok: true, message: 'Notice published.' };
+}
+
 export async function sendResidentMessage(account: TestAccount | null, payload?: Partial<SimpleRecord>): Promise<MvpActionResult> {
   const context = await requireUserContext(account);
   if (!context.ok) return context;

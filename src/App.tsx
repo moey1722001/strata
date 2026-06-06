@@ -69,6 +69,7 @@ import {
   createResidentIssue,
   loadMvpData,
   markMessagesRead,
+  publishNotice,
   runSupabaseDiagnostic,
   sendResidentMessage,
   signInTestAccount,
@@ -120,6 +121,7 @@ type FlowActions = {
   notifyResident: (id: string) => Promise<void>;
   contractorUpdate: (id?: string, status?: string, note?: string) => Promise<void>;
   createNotice: (payload?: Partial<Notice>) => Promise<void>;
+  publishNotice: (id: string) => Promise<void>;
   sendMessage: (payload?: Partial<SimpleRecord>) => Promise<void>;
   uploadDocument: (payload?: Partial<SimpleRecord> & { file?: File }) => Promise<void>;
   vote: (payload?: Partial<SimpleRecord>) => Promise<void>;
@@ -284,6 +286,7 @@ function App() {
     notifyResident: (id: string) => runAction(() => updateReportIssueStatus(currentAccount, id, 'Under Review')),
     contractorUpdate: (id?: string, status = 'In Progress', note?: string) => runAction(() => addContractorUpdate(currentAccount, id, status, note)),
     createNotice: (payload?: Partial<Notice>) => runAction(() => createNotice(currentAccount, payload)),
+    publishNotice: (id: string) => runAction(() => publishNotice(currentAccount, id)),
     sendMessage: (payload?: Partial<SimpleRecord>) => runAction(() => sendResidentMessage(currentAccount, payload)),
     uploadDocument: (payload?: Partial<SimpleRecord> & { file?: File }) => runAction(() => uploadDocument(currentAccount, payload)),
     vote: (payload?: Partial<SimpleRecord>) => runAction(() => voteOnMotion(currentAccount, payload)),
@@ -1247,7 +1250,7 @@ function CommunicationsHub({ role, onNavigate, data, actions }: { role: Role; on
       <Panel title={(role === 'manager' || role === 'portfolio_admin' || role === 'super_admin') ? 'Notices' : 'Published notices'}>
         {scopedNotices.length ? (
           <div className="grid gap-4 lg:grid-cols-2">
-            {scopedNotices.map((notice) => <NoticeCard notice={notice} role={role} key={notice.id} />)}
+            {scopedNotices.map((notice) => <NoticeCard notice={notice} role={role} actions={actions} key={notice.id} />)}
           </div>
         ) : <EmptyState title="No notices yet" copy="Managers can create the first Atlas Residences notice from this page." />}
       </Panel>
@@ -2381,7 +2384,7 @@ function ReportsPage({ role, data }: { role: Role; data: MvpData }) {
   return <ModulePage title="Reports" eyebrow={rolePermissions[role].scope} records={recordsByRole[role]} cta="Export report" />;
 }
 
-function NoticeCard({ notice, role }: { notice: Notice; role: Role }) {
+function NoticeCard({ notice, role, actions }: { notice: Notice; role: Role; actions: FlowActions }) {
   return (
     <article className="rounded-3xl border border-line bg-white p-5">
       <div className="flex items-center justify-between gap-3">
@@ -2400,6 +2403,9 @@ function NoticeCard({ notice, role }: { notice: Notice; role: Role }) {
       <h2 className="mt-4 text-lg font-semibold">{notice.title}</h2>
       <p className="mt-2 text-sm text-slate-500">{buildingName(notice.buildingId)} · {notice.audience}</p>
       <p className="mt-4 text-sm leading-6 text-slate-600">{notice.body}</p>
+      {notice.publicationStatus === 'Draft' && (role === 'manager' || role === 'portfolio_admin' || role === 'super_admin') && (
+        <button className="btn-primary mt-4" onClick={() => actions.publishNotice(notice.id)}><Bell size={16} /> Publish notice</button>
+      )}
     </article>
   );
 }
