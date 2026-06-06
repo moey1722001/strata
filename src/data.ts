@@ -263,6 +263,7 @@ export type SimpleRecord = {
   due?: string;
   meta?: string;
   amount?: number;
+  href?: string;
 };
 
 export type NavItem = {
@@ -812,48 +813,33 @@ export const navItems: NavItem[] = [
 
   { id: 'portfolio', label: 'Portfolio Dashboard', icon: LayoutDashboard, roles: ['portfolio_admin'] },
   { id: 'buildings', label: 'Buildings', icon: Building2, roles: ['portfolio_admin'] },
-  { id: 'staff_performance', label: 'Staff Performance', icon: Users, roles: ['portfolio_admin'] },
-  { id: 'contractor_performance', label: 'Contractor Performance', icon: Wrench, roles: ['portfolio_admin'] },
-  { id: 'arrears_overview', label: 'Arrears Overview', icon: DollarSign, roles: ['portfolio_admin'] },
-  { id: 'compliance_risk', label: 'Compliance Risk', icon: ShieldCheck, roles: ['portfolio_admin'] },
-  { id: 'reports', label: 'Reports', icon: BarChart3, roles: ['portfolio_admin'] },
+  { id: 'maintenance', label: 'Issues & Work Orders', icon: Hammer, roles: ['portfolio_admin'] },
+  { id: 'communications', label: 'Communications', icon: MessageSquare, roles: ['portfolio_admin'] },
+  { id: 'documents', label: 'Documents', icon: FileText, roles: ['portfolio_admin'] },
+  { id: 'messages', label: 'Messages', icon: MessageSquare, roles: ['portfolio_admin'] },
 
   { id: 'portfolio', label: 'Dashboard', icon: LayoutDashboard, roles: ['manager'] },
   { id: 'buildings', label: 'Buildings', icon: Building2, roles: ['manager'] },
   { id: 'maintenance', label: 'Issues & Work Orders', icon: Hammer, roles: ['manager'] },
   { id: 'communications', label: 'Communications', icon: MessageSquare, roles: ['manager'] },
   { id: 'documents', label: 'Documents', icon: FileText, roles: ['manager'] },
-  { id: 'projects', label: 'Projects', icon: FolderKanban, roles: ['manager'] },
-  { id: 'compliance', label: 'Compliance', icon: ShieldCheck, roles: ['manager'] },
-  { id: 'renovations', label: 'Renovations', icon: ClipboardCheck, roles: ['manager'] },
-  { id: 'facilities', label: 'Facilities', icon: Landmark, roles: ['manager'] },
-  { id: 'building_settings', label: 'Building Settings', icon: ShieldCheck, roles: ['manager'] },
-  { id: 'contractor', label: 'Contractors', icon: Wrench, roles: ['manager'] },
   { id: 'messages', label: 'Messages', icon: MessageSquare, roles: ['manager'] },
-  { id: 'reports', label: 'Reports', icon: BarChart3, roles: ['manager'] },
 
   { id: 'resident', label: 'Dashboard', icon: Home, roles: ['resident'] },
   { id: 'communications', label: 'Communications', icon: MessageSquare, roles: ['resident'] },
   { id: 'report_issue', label: 'Report Issue', icon: AlertTriangle, roles: ['resident'] },
   { id: 'my_requests', label: 'My Requests', icon: ClipboardCheck, roles: ['resident'] },
   { id: 'documents', label: 'Documents', icon: FileText, roles: ['resident'] },
-  { id: 'facilities', label: 'Facility Bookings', icon: Landmark, roles: ['resident'] },
-  { id: 'packages', label: 'Packages', icon: FileText, roles: ['resident'] },
-  { id: 'my_levies', label: 'My Levies', icon: DollarSign, roles: ['resident'] },
   { id: 'directory', label: 'Building Directory', icon: ClipboardCheck, roles: ['resident'] },
   { id: 'messages', label: 'Messages', icon: MessageSquare, roles: ['resident'] },
 
   { id: 'committee', label: 'Dashboard', icon: LayoutDashboard, roles: ['committee'] },
   { id: 'motions', label: 'Motions & Voting', icon: Vote, roles: ['committee'] },
-  { id: 'projects', label: 'Projects', icon: FolderKanban, roles: ['committee'] },
-  { id: 'quotes', label: 'Quotes', icon: DollarSign, roles: ['committee'] },
   { id: 'documents', label: 'Documents', icon: FileText, roles: ['committee'] },
-  { id: 'meetings', label: 'Meetings', icon: CalendarDays, roles: ['committee'] },
   { id: 'messages', label: 'Messages', icon: MessageSquare, roles: ['committee'] },
 
   { id: 'contractor', label: 'Dashboard', icon: LayoutDashboard, roles: ['contractor'] },
   { id: 'maintenance', label: 'Assigned Jobs', icon: Wrench, roles: ['contractor'] },
-  { id: 'documents', label: 'Documents', icon: FileText, roles: ['contractor'] },
   { id: 'messages', label: 'Messages', icon: MessageSquare, roles: ['contractor'] }
 ];
 

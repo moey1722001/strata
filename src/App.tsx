@@ -66,6 +66,7 @@ import {
   addContractorUpdate,
   assignContractorToFirstJob,
   bookFacility,
+  createBuilding,
   createNotice,
   createResidentIssue,
   loadMvpData,
@@ -110,6 +111,7 @@ const statusClasses: Record<string, string> = {
 
 type FlowActions = {
   openForm: (kind: FormKind, context?: FormContext) => void;
+  createBuilding: (payload: Record<string, string>) => Promise<void>;
   reportIssue: (payload?: Partial<ReportIssue> & { description?: string }) => Promise<void>;
   assignContractor: (id?: string, payload?: Partial<MaintenanceRequest>) => Promise<void>;
   updateMaintenanceStatus: (id: string, status: string, note?: string) => Promise<void>;
@@ -130,6 +132,7 @@ type FlowActions = {
 };
 
 type FormKind =
+  | 'addBuilding'
   | 'sendMessage'
   | 'createNotice'
   | 'uploadDocument'
@@ -158,6 +161,7 @@ function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [currentAccount, setCurrentAccount] = useState<TestAccount | null>(testAccounts.find((account) => account.role === 'portfolio_admin') ?? null);
   const [mvpData, setMvpData] = useState<MvpData>({
+    buildings: [],
     notices: [],
     reportIssues: [],
     maintenanceRequests: [],
@@ -251,6 +255,7 @@ function App() {
 
   const flowActions: FlowActions = {
     openForm: (kind: FormKind, context?: FormContext) => setActiveForm({ kind, context }),
+    createBuilding: (payload: Record<string, string>) => runAction(() => createBuilding(currentAccount, payload)),
     reportIssue: (payload?: Partial<ReportIssue>) => runAction(() => createResidentIssue(currentAccount, payload)),
     assignContractor: (id?: string) => runAction(() => assignContractorToFirstJob(currentAccount, id)),
     updateMaintenanceStatus: (id: string, status: string, note?: string) => runAction(() => updateMaintenanceRequestStatus(currentAccount, id, status, note)),
@@ -273,14 +278,19 @@ function App() {
   async function submitWorkflowForm(payload: Record<string, string>, context?: FormContext) {
     if (!activeForm) return;
     const targetId = context?.id;
+    if (activeForm.kind === 'addBuilding') {
+      await flowActions.createBuilding(payload);
+    }
     if (activeForm.kind === 'sendMessage') {
       await flowActions.sendMessage({ title: payload.title, meta: payload.body });
     }
     if (activeForm.kind === 'createNotice') {
-      await flowActions.createNotice({ title: payload.title, category: payload.category, priority: payload.priority as Priority, body: payload.body, audience: payload.audience });
+      const selectedBuilding = [...mvpData.buildings, ...buildings].find((building) => building.name === payload.building);
+      await flowActions.createNotice({ title: payload.title, buildingId: selectedBuilding?.id, category: payload.category, priority: payload.priority as Priority, body: payload.body, audience: payload.audience });
     }
     if (activeForm.kind === 'uploadDocument') {
-      await flowActions.uploadDocument({ title: payload.title, status: payload.visibility, meta: payload.category });
+      const selectedBuilding = [...mvpData.buildings, ...buildings].find((building) => building.name === payload.building);
+      await flowActions.uploadDocument({ title: payload.title, buildingId: selectedBuilding?.id, status: payload.visibility, meta: payload.category, due: payload.url });
     }
     if (activeForm.kind === 'reportIssue') {
       await flowActions.reportIssue({ title: payload.title, category: payload.category as ReportIssue['category'], severity: payload.severity as Priority, description: payload.description });
@@ -558,7 +568,7 @@ function PageRouter({ page, role, onNavigate, data, actions, buildingConfig }: {
   if (page === 'portfolio' && role === 'super_admin') return <PlatformDashboard onNavigate={onNavigate} data={data} />;
   if (page === 'portfolio' && role === 'manager') return <ManagerDashboard onNavigate={onNavigate} data={data} actions={actions} />;
   if (page === 'portfolio') return <PortfolioDashboard role={role} onNavigate={onNavigate} data={data} />;
-  if (page === 'buildings') return <BuildingsPage role={role} data={data} />;
+  if (page === 'buildings') return <BuildingsPage role={role} data={data} actions={actions} onNavigate={onNavigate} />;
   if (page === 'building' && (role === 'manager' || role === 'portfolio_admin')) return <BuildingDashboard role={role} data={data} buildingConfig={buildingConfig} />;
   if (page === 'resident') return <ResidentDashboard role={role} onNavigate={onNavigate} data={data} actions={actions} buildingConfig={buildingConfig} />;
   if (page === 'committee') return <CommitteeDashboard role={role} onNavigate={onNavigate} data={data} actions={actions} />;
@@ -661,32 +671,26 @@ function PlatformDashboard({ onNavigate, data }: { onNavigate: (page: PageId) =>
 }
 
 function ManagerDashboard({ onNavigate, data, actions }: { onNavigate: (page: PageId) => void; data: MvpData; actions: FlowActions }) {
-  const assignedBuildings = buildings.filter((building) => roleBuildingScope.manager.includes(building.id));
-  const openIssues = data.maintenanceRequests.filter((request) => assignedBuildings.some((building) => building.id === request.buildingId) && !['Completed', 'Closed', 'Rejected'].includes(request.status));
+  const assignedBuildings = data.buildings.length ? data.buildings : buildings.filter((building) => roleBuildingScope.manager.includes(building.id));
+  const openIssues = data.maintenanceRequests.filter((request) => !['Completed', 'Closed', 'Rejected'].includes(request.status));
   const overdue = openIssues.filter((request) => request.overdue);
-  const emergencyIssues = filterForRole(data.reportIssues, 'manager').filter((issue) => issue.severity === 'Emergency' || issue.severity === 'High');
-  const renovationApprovals = filterForRole(data.renovations, 'manager').filter((item) => ['Manager Review', 'Committee Review', 'More Info Required'].includes(item.status));
-  const contractorUpdates = filterForRole(data.messages, 'manager').filter((message) => message.title.toLowerCase().includes('contractor') || message.meta?.toLowerCase().includes('contractor'));
-  const upcomingMeetings = filterForRole(meetings, 'manager').slice(0, 3);
+  const emergencyIssues = data.reportIssues.filter((issue) => issue.severity === 'Emergency' || issue.severity === 'High');
+  const unreadMessages = data.messages.filter((message) => message.status === 'Unread');
   return (
     <div className="space-y-6">
       <SectionHeader eyebrow="Manager workspace" title="Assigned buildings need attention" action={<button className="btn-primary" onClick={() => actions.openForm('createNotice')}><Bell size={17} /> Create notice</button>} />
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <Metric title="Assigned buildings" value={assignedBuildings.length.toString()} detail="Harbourline, Glebe Foundry" icon={Building2} />
+        <Metric title="Assigned buildings" value={assignedBuildings.length.toString()} detail="Your managed schemes" icon={Building2} />
         <Metric title="Emergency issues" value={emergencyIssues.length.toString()} detail={`${overdue.length} overdue work orders`} icon={AlertTriangle} tone="red" />
-        <Metric title="Compliance risks" value={complianceItems.filter((item) => assignedBuildings.some((building) => building.id === item.buildingId) && item.status !== 'Open').length.toString()} detail="Due soon or overdue" icon={ShieldCheck} tone="red" />
-        <Metric title="Unread messages" value={filterForRole(data.messages, 'manager').filter((message) => message.status === 'Unread').length.toString()} detail="Resident and contractor threads" icon={MessageSquare} tone="blue" />
+        <Metric title="Unread messages" value={unreadMessages.length.toString()} detail="Resident conversations" icon={MessageSquare} tone="blue" />
+        <Metric title="Recent documents" value={data.documents.length.toString()} detail="Available across assigned buildings" icon={FileText} tone="green" />
       </div>
       <div className="grid gap-5 xl:grid-cols-[1.2fr_0.8fr]">
         <Panel title="Issue triage queue" action={<button className="btn-secondary" onClick={() => onNavigate('maintenance')}><ArrowRight size={16} /> Open maintenance</button>}>
-          <ReportIssueList issues={filterForRole(data.reportIssues, 'manager')} managerView actions={actions} />
+          <ReportIssueList issues={data.reportIssues} managerView actions={actions} />
         </Panel>
-        <Panel title="Attention list">
-          <RecordTable records={[
-            ...renovationApprovals.slice(0, 2),
-            ...contractorUpdates.slice(0, 2),
-            ...upcomingMeetings
-          ]} />
+        <Panel title="Recent resident messages" action={<button className="btn-secondary" onClick={() => onNavigate('messages')}><ArrowRight size={16} /> Open inbox</button>}>
+          <RecordTable records={data.messages.slice(0, 5)} />
         </Panel>
       </div>
     </div>
@@ -694,75 +698,63 @@ function ManagerDashboard({ onNavigate, data, actions }: { onNavigate: (page: Pa
 }
 
 function PortfolioDashboard({ role, onNavigate, data }: { role: Role; onNavigate: (page: PageId) => void; data: MvpData }) {
-  const scopedBuildings = role === 'manager' ? buildings.slice(0, 2) : buildings;
-  const openMaintenance = filterForRole(data.maintenanceRequests, role).filter((request) => !['Completed', 'Closed', 'Rejected'].includes(request.status));
+  const scopedBuildings = data.buildings.length ? data.buildings : buildings;
+  const openMaintenance = data.maintenanceRequests.filter((request) => !['Completed', 'Closed', 'Rejected'].includes(request.status));
   const overdue = openMaintenance.filter((request) => request.overdue);
-  const arrears = scopedBuildings.reduce((total, building) => total + building.arrears, 0);
-  const spend = scopedBuildings.reduce((total, building) => total + building.maintenanceSpend, 0);
+  const unreadMessages = data.messages.filter((message) => message.status === 'Unread');
+  const recentActivity = [
+    ...data.notices.slice(0, 2).map(noticeToRecord),
+    ...data.messages.slice(0, 2),
+    ...data.documents.slice(0, 2)
+  ];
 
   return (
     <div className="space-y-6">
       <SectionHeader
-        eyebrow={role === 'super_admin' ? 'Platform control centre' : 'Portfolio command'}
-        title={role === 'super_admin' ? 'SaaS platform overview' : 'Northshore Strata Co. portfolio'}
-        action={<button className="btn-primary" onClick={() => onNavigate('reports')}><FileText size={17} /> Open reports</button>}
+        eyebrow="Portfolio workspace"
+        title="Northshore Strata Co."
+        action={<button className="btn-primary" onClick={() => onNavigate('buildings')}><Plus size={17} /> Add building</button>}
       />
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <Metric title="Buildings" value={scopedBuildings.length.toString()} detail={`${scopedBuildings.reduce((total, building) => total + building.lots, 0)} lots`} icon={Building2} />
         <Metric title="Open maintenance" value={openMaintenance.length.toString()} detail={`${overdue.length} overdue`} icon={HammerIcon} tone="amber" />
-        <Metric title={role === 'portfolio_admin' ? 'Portfolio arrears' : 'Platform revenue'} value={role === 'portfolio_admin' ? currency(arrears) : currency(company.mrr)} detail={role === 'portfolio_admin' ? 'Company-wide levy risk' : 'Monthly recurring revenue'} icon={DollarSign} tone="green" />
-        <Metric title="Compliance risk" value={`${complianceItems.filter((item) => item.status === 'Overdue').length} overdue`} detail="AFSS, insurance, lifts" icon={ShieldCheck} tone="red" />
+        <Metric title="Unread messages" value={unreadMessages.length.toString()} detail="Resident conversations" icon={MessageSquare} tone="blue" />
+        <Metric title="Documents" value={data.documents.length.toString()} detail="Available across the portfolio" icon={FileText} tone="green" />
       </div>
       <div className="grid gap-5 xl:grid-cols-[1.2fr_0.8fr]">
-        <Panel title="Buildings needing attention" action={<ComingSoonButton icon={<Filter size={16} />} label="Filter" />}>
+        <Panel title="Buildings" action={<button className="btn-secondary" onClick={() => onNavigate('buildings')}><ArrowRight size={16} /> Manage buildings</button>}>
           <div className="space-y-3">
-            {[...scopedBuildings].sort((a, b) => b.complaints - a.complaints).map((building) => (
+            {scopedBuildings.map((building) => (
               <div key={building.id} className="rounded-2xl border border-line p-4">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
                     <h3 className="font-semibold">{building.name}</h3>
                     <p className="text-sm text-slate-500">{building.address}</p>
                   </div>
-                  <Badge label={`${building.complaints} complaints`} tone={building.complaints > 15 ? 'Emergency' : 'Medium'} />
+                  <Badge label={`${building.lots} lots`} tone="Low" />
                 </div>
-                <div className="mt-4 grid gap-3 sm:grid-cols-4">
-                  <MiniStat label="Satisfaction" value={`${building.satisfaction}%`} />
-                  <MiniStat label="Arrears" value={currency(building.arrears)} />
-                  <MiniStat label="Spend" value={currency(building.maintenanceSpend)} />
-                  <MiniStat label="Margin" value={`${building.profit}%`} />
+                <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                  <MiniStat label="Open issues" value={data.maintenanceRequests.filter((request) => request.buildingId === building.id && !['Closed', 'Completed'].includes(request.status)).length.toString()} />
+                  <MiniStat label="Recent notices" value={data.notices.filter((notice) => notice.buildingId === building.id).length.toString()} />
                 </div>
               </div>
             ))}
           </div>
         </Panel>
-        <Panel title="Performance signals">
-          <div className="space-y-4">
-            <Score label="Resident satisfaction" value={89} />
-            <Score label="Staff performance" value={92} />
-            <Score label="Contractor performance" value={87} />
-            <Score label="Portfolio profitability" value={78} />
-            <div className="rounded-2xl bg-ink p-4 text-white">
-              <p className="text-sm text-slate-300">Maintenance spend</p>
-              <p className="mt-2 text-2xl font-semibold">{currency(spend)}</p>
-              <p className="mt-1 text-sm text-slate-300">Levy arrears across scope: {currency(arrears)}</p>
-            </div>
-          </div>
+        <Panel title="Recent activity">
+          <RecordTable records={recentActivity} />
         </Panel>
-        {role === 'portfolio_admin' && (
-          <Panel title="Portfolio levy arrears" className="xl:col-span-2" action={<button className="btn-secondary" onClick={() => onNavigate('levy_management')}><ArrowRight size={16} /> Levy management</button>}>
-            <PortfolioLevySummary />
-          </Panel>
-        )}
       </div>
     </div>
   );
 }
 
-function BuildingsPage({ role, data }: { role: Role; data: MvpData }) {
-  const scopedBuildings = role === 'manager' ? buildings.slice(0, 2) : buildings;
+function BuildingsPage({ role, data, actions, onNavigate }: { role: Role; data: MvpData; actions: FlowActions; onNavigate: (page: PageId) => void }) {
+  const availableBuildings = data.buildings.length ? data.buildings : buildings;
+  const scopedBuildings = role === 'manager' && !data.buildings.length ? availableBuildings.slice(0, 2) : availableBuildings;
   return (
     <div className="space-y-6">
-      <SectionHeader eyebrow="Buildings" title="Managed schemes" action={<ComingSoonButton primary icon={<Plus size={17} />} label="Add building" />} />
+      <SectionHeader eyebrow="Buildings" title="Managed schemes" action={<button className="btn-primary" onClick={() => actions.openForm('addBuilding')}><Plus size={17} /> Add building</button>} />
       <div className="grid gap-4 lg:grid-cols-2">
         {scopedBuildings.map((building) => (
           <article className="rounded-3xl border border-line bg-white p-5 shadow-soft" key={building.id}>
@@ -777,6 +769,10 @@ function BuildingsPage({ role, data }: { role: Role; data: MvpData }) {
               <MiniStat label="Manager" value={building.manager} />
               <MiniStat label="Open jobs" value={data.maintenanceRequests.filter((request) => request.buildingId === building.id && request.status !== 'Closed').length.toString()} />
               <MiniStat label="Compliance" value={complianceItems.filter((item) => item.buildingId === building.id && item.status === 'Overdue').length ? 'At risk' : 'On track'} />
+            </div>
+            <div className="mt-5 flex flex-wrap gap-2">
+              <button className="btn-secondary" onClick={() => onNavigate('building')}><Eye size={16} /> Open building</button>
+              {role === 'manager' && <button className="btn-secondary" onClick={() => onNavigate('building_settings')}><ShieldCheck size={16} /> Configure</button>}
             </div>
           </article>
         ))}
@@ -820,31 +816,24 @@ function BuildingDashboard({ role, data, buildingConfig }: { role: Role; data: M
 }
 
 function ResidentDashboard({ role, onNavigate, data, actions, buildingConfig }: { role: Role; onNavigate: (page: PageId) => void; data: MvpData; actions: FlowActions; buildingConfig: BuildingConfiguration }) {
-  const feed = filterForRole(data.notices, role);
-  const ownRequests = filterPrivateForRole(data.maintenanceRequests, role);
-  const upcomingBooking = filterPrivateForRole(data.facilityBookings, role)[0];
-  const awaitingPackage = buildingConfig.packageManagement.enabled ? filterPrivateForRole(data.packages, role).find((item) => item.status === 'Awaiting collection') : undefined;
+  const feed = data.notices;
+  const ownRequests = data.maintenanceRequests;
   const quickActions: [string, PageId][] = [
     ['See notices', 'communications'],
     ['Report an issue', 'report_issue'],
     ['View documents', 'documents'],
-    ...(activeFacilities(buildingConfig).length ? [['Book facilities', 'facilities'] as [string, PageId]] : []),
-    ...(buildingConfig.residentPermissions.leviesVisibleTo === 'owners and tenants' ? [['View my levies', 'my_levies'] as [string, PageId]] : [['View my levies', 'my_levies'] as [string, PageId]]),
     ['Check building contacts', 'directory'],
-    ['Track requests', 'my_requests']
+    ['Track requests', 'my_requests'],
+    ['Message manager', 'messages']
   ];
   return (
     <div className="mx-auto max-w-5xl space-y-5">
       <SectionHeader eyebrow="Resident home" title={buildingConfig.profile.name} action={<button className="btn-primary" onClick={() => actions.openForm('reportIssue')}><Plus size={17} /> Report issue</button>} />
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <Metric title="Notices" value={feed.length.toString()} detail="Latest building updates" icon={Bell} />
+        <Metric title="Latest notice" value={feed[0] ? 'New' : 'Clear'} detail={feed[0]?.title ?? 'No current notices'} icon={Bell} />
         <Metric title="Open request" value={ownRequests[0]?.status ?? 'Clear'} detail={ownRequests[0]?.title ?? 'No active requests'} icon={Clock3} tone="amber" />
-        <Metric title="Next booking" value={upcomingBooking?.due ?? 'None'} detail={upcomingBooking?.title ?? 'No bookings scheduled'} icon={CalendarDays} tone="blue" />
-        {buildingConfig.packageManagement.enabled ? (
-          <Metric title="Package" value={awaitingPackage ? 'Waiting' : 'Clear'} detail={awaitingPackage?.title ?? 'No packages awaiting collection'} icon={FileText} tone="green" />
-        ) : (
-          <Metric title="Building contact" value={visibleContacts(buildingConfig, role)[0]?.type ?? 'Directory'} detail={visibleContacts(buildingConfig, role)[0]?.name ?? 'Configured per building'} icon={FileText} tone="green" />
-        )}
+        <Metric title="Documents" value={data.documents.length.toString()} detail="Building documents available" icon={FileText} tone="blue" />
+        <Metric title="Building contact" value={visibleContacts(buildingConfig, role)[0]?.type ?? 'Directory'} detail={visibleContacts(buildingConfig, role)[0]?.name ?? 'Configured per building'} icon={MessageSquare} tone="green" />
       </div>
       <div className="grid gap-5 lg:grid-cols-[1.1fr_0.9fr]">
         <Panel title="Building feed">
@@ -931,9 +920,9 @@ function ContractorDashboard({ role, data, actions }: { role: Role; data: MvpDat
 
 function CommunicationsHub({ role, onNavigate, data, actions }: { role: Role; onNavigate: (page: PageId) => void; data: MvpData; actions: FlowActions }) {
   const [activeTab, setActiveTab] = useState<'Feed' | 'Notices' | 'Messages' | 'Alerts'>('Feed');
-  const scopedNotices = filterForRole(data.notices, role);
-  const scopedMessages = filterForRole(data.messages, role);
-  const scopedAlerts = filterForRole(data.notifications, role);
+  const scopedNotices = data.notices;
+  const scopedMessages = data.messages;
+  const scopedAlerts = data.notifications;
   const tabs = ['Feed', 'Notices', 'Messages', 'Alerts'] as const;
   const recordsByTab: Record<typeof activeTab, SimpleRecord[]> = {
     Feed: scopedNotices.slice(0, 8).map(noticeToRecord),
@@ -966,39 +955,27 @@ function CommunicationsHub({ role, onNavigate, data, actions }: { role: Role; on
 }
 
 function ReportIssuePage({ role, data, actions, buildingConfig }: { role: Role; data: MvpData; actions: FlowActions; buildingConfig: BuildingConfiguration }) {
-  const scopedIssues = filterPrivateForRole(data.reportIssues, role);
+  const scopedIssues = data.reportIssues;
   const categories = enabledIssueCategories(buildingConfig);
-  const [selectedCategory, setSelectedCategory] = useState<ReportIssue['category']>((categories[0]?.label ?? 'Other') as ReportIssue['category']);
 
   return (
     <div className="mx-auto max-w-5xl space-y-6">
       <SectionHeader eyebrow="Report Issue" title="One simple flow for residents" action={<button className="btn-primary" onClick={() => actions.openForm('reportIssue')}><Plus size={17} /> Submit issue</button>} />
       <div className="grid gap-5 lg:grid-cols-[0.8fr_1.2fr]">
-        <Panel title="New issue">
-          <div className="grid gap-4">
-            <label>
-              <span className="text-sm font-medium text-slate-600">Category</span>
-              <div className="mt-2 grid grid-cols-2 gap-2">
-                {categories.map((category) => (
-                  <button
-                    className={`rounded-2xl border px-3 py-3 text-sm font-semibold hover:bg-slate-50 ${selectedCategory === category.label ? 'border-ink bg-slate-50 text-ink' : 'border-line text-slate-600'}`}
-                    key={category.id}
-                    onClick={() => setSelectedCategory(category.label as ReportIssue['category'])}
-                    type="button"
-                  >
-                    <span>{category.label}</span>
-                    <span className="mt-1 block text-xs font-medium text-slate-400">{category.defaultPriority}</span>
-                  </button>
-                ))}
-              </div>
-            </label>
-            <label>
-              <span className="text-sm font-medium text-slate-600">What happened?</span>
-              <textarea className="mt-2 min-h-28 w-full rounded-2xl border border-line px-4 py-3 outline-none focus:border-harbour" placeholder="Describe the issue, location and urgency" />
-            </label>
+        <Panel title="Available issue categories">
+          <div className="grid gap-3">
+            <div className="grid grid-cols-2 gap-2">
+              {categories.map((category) => (
+                <div className="rounded-2xl border border-line px-3 py-3 text-sm font-semibold" key={category.id}>
+                  <span>{category.label}</span>
+                  <span className="mt-1 block text-xs font-medium text-slate-400">Default priority: {category.defaultPriority}</span>
+                </div>
+              ))}
+            </div>
             <div className="rounded-2xl bg-slate-50 p-4 text-sm leading-6 text-slate-600">
               {buildingConfig.profile.name} only shows issue categories enabled for this building. The system routes each report into maintenance, incidents, or both based on category and severity.
             </div>
+            <button className="btn-primary justify-center" onClick={() => actions.openForm('reportIssue')}><Plus size={17} /> Start report</button>
           </div>
         </Panel>
         <Panel title="Your tracked issues">
@@ -1131,7 +1108,7 @@ function MyRequestsPage({ role, data, actions }: { role: Role; data: MvpData; ac
     <div className="mx-auto max-w-5xl space-y-6">
       <SectionHeader eyebrow="My Requests" title="Track reported issues" action={<button className="btn-primary" onClick={() => actions.openForm('reportIssue')}><Plus size={17} /> Report issue</button>} />
       <Panel title="Request progress">
-        <ReportIssueList issues={filterPrivateForRole(data.reportIssues, role)} />
+        <ReportIssueList issues={data.reportIssues} />
       </Panel>
     </div>
   );
@@ -1140,7 +1117,7 @@ function MyRequestsPage({ role, data, actions }: { role: Role; data: MvpData; ac
 function MessagesPage({ role, data, actions }: { role: Role; data: MvpData; actions: FlowActions }) {
   const records = role === 'contractor'
     ? contractorMessageRecords(data.maintenanceRequests)
-    : filterForRole(data.messages, role);
+    : data.messages;
   return (
     <div className="space-y-6">
       <SectionHeader eyebrow="Messages" title="Building conversations and manager replies" action={(role === 'resident' || role === 'committee' || role === 'manager') ? <button className="btn-primary" onClick={() => actions.openForm('sendMessage')}><MessageSquare size={17} /> Send message</button> : undefined} />
@@ -1154,7 +1131,7 @@ function MessagesPage({ role, data, actions }: { role: Role; data: MvpData; acti
 function DocumentsPage({ role, data, actions }: { role: Role; data: MvpData; actions: FlowActions }) {
   const records = role === 'contractor'
     ? contractorDocumentRecords(data.maintenanceRequests)
-    : filterForRole(data.documents, role);
+    : data.documents;
   return (
     <div className="space-y-6">
       <SectionHeader
@@ -1190,11 +1167,11 @@ function MaintenancePage({ role, data, actions }: { role: Role; data: MvpData; a
       <SectionHeader eyebrow="Maintenance" title="Internal triage, contractors and SLA timers" action={<ComingSoonButton primary icon={<Plus size={17} />} label="New internal job" />} />
       <div className="grid gap-5 xl:grid-cols-[0.9fr_1.1fr]">
         <Panel title="Resident issues to triage">
-          <ReportIssueList issues={filterForRole(data.reportIssues, role)} managerView actions={actions} />
+          <ReportIssueList issues={data.reportIssues} managerView actions={actions} />
         </Panel>
         <Panel title="Maintenance jobs">
           <MaintenanceCards
-            requests={filterForRole(data.maintenanceRequests, role)}
+            requests={data.maintenanceRequests}
             compact
             onAssignContractor={(id) => actions.openForm('assignContractor', { id, title: data.maintenanceRequests.find((request) => request.id === id)?.title })}
             onStatusUpdate={(id, status) => actions.openForm('updateJobStatus', { id, status, title: data.maintenanceRequests.find((request) => request.id === id)?.title })}
@@ -2145,7 +2122,41 @@ function formConfig(kind: FormKind, role: Role, context: FormContext | undefined
   const issueOptions = enabledIssueCategories(buildingConfig).map((category) => category.label);
   const facilityOptions = activeFacilities(buildingConfig).map((facility) => facility.name);
   const renovationOptions = activeRenovationRules(buildingConfig).map((rule) => rule.type);
+  const buildingOptions = (data.buildings.length ? data.buildings : buildings).map((building) => building.name);
   const configs: Record<FormKind, { title: string; copy: string; submitLabel: string; defaults: Record<string, string>; fields: FormField[] }> = {
+    addBuilding: {
+      title: 'Add building',
+      copy: 'Set up the scheme, manager, resident contacts and core self-service options in one pass.',
+      submitLabel: 'Create building',
+      defaults: {
+        name: '',
+        address: '',
+        suburb: '',
+        state: 'NSW',
+        postcode: '',
+        lots: '',
+        managerEmail: role === 'manager' ? 'manager@northshorestrata.com.au' : 'manager@northshorestrata.com.au',
+        contacts: 'Strata manager | Noah Haddad | manager@northshorestrata.com.au',
+        facilities: '',
+        packageManagement: 'No',
+        issueCategories: 'Water leak\nPlumbing\nElectrical\nSecurity\nNoise\nOther',
+        starterDocuments: ''
+      },
+      fields: [
+        { name: 'name', label: 'Building name', required: true },
+        { name: 'address', label: 'Street address', required: true },
+        { name: 'suburb', label: 'Suburb', required: true },
+        { name: 'state', label: 'State', options: ['NSW', 'VIC', 'QLD', 'ACT', 'SA', 'WA', 'TAS', 'NT'], required: true },
+        { name: 'postcode', label: 'Postcode', required: true },
+        { name: 'lots', label: 'Number of lots', required: true },
+        { name: 'managerEmail', label: 'Assigned strata manager email', required: true },
+        { name: 'contacts', label: 'Contacts, one per line: type | name | detail', type: 'textarea' },
+        { name: 'facilities', label: 'Facilities, one per line', type: 'textarea' },
+        { name: 'packageManagement', label: 'Package management enabled', options: ['No', 'Yes'], required: true },
+        { name: 'issueCategories', label: 'Resident issue categories, one per line', type: 'textarea', required: true },
+        { name: 'starterDocuments', label: 'Starter document links, one per line: title | URL', type: 'textarea' }
+      ]
+    },
     sendMessage: {
       title: role === 'manager' ? 'Reply to resident' : 'Send message',
       copy: 'Creates a visible resident-manager thread record for the other role.',
@@ -2157,8 +2168,9 @@ function formConfig(kind: FormKind, role: Role, context: FormContext | undefined
       title: 'Create notice',
       copy: 'Creates a notice that appears immediately in the resident Communications Hub.',
       submitLabel: 'Create notice',
-      defaults: { title: 'Lift maintenance update', category: 'Maintenance update', priority: 'Medium', audience: 'All residents', body: '' },
+      defaults: { building: buildingOptions[0] ?? buildingConfig.profile.name, title: 'Lift maintenance update', category: 'Maintenance update', priority: 'Medium', audience: 'All residents', body: '' },
       fields: [
+        { name: 'building', label: 'Building', options: buildingOptions, required: true },
         { name: 'title', label: 'Notice title', required: true },
         { name: 'category', label: 'Category', options: ['Announcement', 'Maintenance update', 'Water shutdown', 'Lift outage', 'Emergency alert'], required: true },
         { name: 'priority', label: 'Priority', options: ['Low', 'Medium', 'High', 'Emergency'], required: true },
@@ -2170,11 +2182,13 @@ function formConfig(kind: FormKind, role: Role, context: FormContext | undefined
       title: 'Upload document',
       copy: 'Adds a document record visible to residents when visibility is set to Visible.',
       submitLabel: 'Add document',
-      defaults: { title: 'Building update document', category: 'Building documents', visibility: 'Visible' },
+      defaults: { building: buildingOptions[0] ?? buildingConfig.profile.name, title: 'Building update document', category: 'Building documents', visibility: 'Visible', url: '' },
       fields: [
+        { name: 'building', label: 'Building', options: buildingOptions, required: true },
         { name: 'title', label: 'Document title', required: true },
         { name: 'category', label: 'Category', options: ['By-laws', 'Minutes', 'Levy notices', 'Insurance', 'Building documents'], required: true },
-        { name: 'visibility', label: 'Visibility', options: ['Visible', 'Committee only'], required: true }
+        { name: 'visibility', label: 'Visibility', options: ['Visible', 'Committee only'], required: true },
+        { name: 'url', label: 'Document URL', required: true }
       ]
     },
     reportIssue: {
@@ -2442,7 +2456,9 @@ function RecordTable({ records }: { records: SimpleRecord[] }) {
                 <td className="py-4 pr-4 text-slate-600">{record.owner}</td>
                 <td className="py-4 pr-4"><Badge label={record.status} tone={record.priority} /></td>
                 <td className="py-4 pr-4 text-slate-600">{record.due ?? 'Not set'}</td>
-                <td className="py-4 pr-4 text-slate-600">{record.amount ? currency(record.amount) : record.meta}</td>
+                <td className="py-4 pr-4 text-slate-600">
+                  {record.href ? <a className="font-semibold text-harbour hover:underline" href={record.href} target="_blank" rel="noreferrer">View document</a> : record.amount ? currency(record.amount) : record.meta}
+                </td>
               </tr>
             ))}
           </tbody>

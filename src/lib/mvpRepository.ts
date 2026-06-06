@@ -1,8 +1,9 @@
 import { supabase, isSupabaseConfigured, supabaseEnvStatus } from './supabase';
 import { auditLogs, buildingConfigurations, company, incidents, packages, testAccounts } from '../data';
-import type { BuildingConfiguration, MaintenanceRequest, Notice, Priority, ReportIssue, Role, SimpleRecord, TestAccount } from '../data';
+import type { Building, BuildingConfiguration, MaintenanceRequest, Notice, Priority, ReportIssue, Role, SimpleRecord, TestAccount } from '../data';
 
 export type MvpData = {
+  buildings: Building[];
   notices: Notice[];
   reportIssues: ReportIssue[];
   maintenanceRequests: MaintenanceRequest[];
@@ -23,6 +24,7 @@ export type MvpActionResult =
   | { ok: false; message: string };
 
 const emptyData: MvpData = {
+  buildings: [],
   notices: [],
   reportIssues: [],
   maintenanceRequests: [],
@@ -102,6 +104,7 @@ export async function loadMvpData(account: TestAccount | null, role: Role): Prom
   const buildingFilter = hasBuildingScope ? allowedBuildingIds : ['00000000-0000-0000-0000-000000000000'];
 
   const [
+    buildingRows,
     noticeRows,
     issueRows,
     maintenanceRows,
@@ -116,6 +119,7 @@ export async function loadMvpData(account: TestAccount | null, role: Role): Prom
     renovationRows,
     buildingSettingsRows
   ] = await Promise.all([
+    supabase.from('buildings').select('*').in('id', buildingFilter).order('name'),
     supabase.from('notices').select('*').in('building_id', buildingFilter).order('created_at', { ascending: false }),
     supabase.from('report_issues').select('*, lots(unit_number), users(full_name)').in('building_id', buildingFilter).order('created_at', { ascending: false }),
     supabase.from('maintenance_requests').select('*, lots(unit_number), users(full_name)').in('building_id', buildingFilter).order('created_at', { ascending: false }),
@@ -137,6 +141,7 @@ export async function loadMvpData(account: TestAccount | null, role: Role): Prom
   const votes = voteRows.data ?? [];
 
   return {
+    buildings: (buildingRows.data ?? []).map(mapBuilding),
     notices: (noticeRows.data ?? []).map(mapNotice),
     reportIssues: (issueRows.data ?? []).map(mapIssue),
     maintenanceRequests: (maintenanceRows.data ?? []).map((row) => mapMaintenance(row, workOrders.find((workOrder) => workOrder.maintenance_request_id === row.id))),
@@ -222,6 +227,114 @@ export async function updateBuildingConfiguration(account: TestAccount | null, c
 
   await insertAudit(membership.company_id, update.data.building_id, user.id, action, 'building_settings', update.data.id);
   return { ok: true, message: 'Building settings saved in Supabase.' };
+}
+
+export async function createBuilding(account: TestAccount | null, payload: Record<string, string>): Promise<MvpActionResult> {
+  if (!isSupabaseConfigured || !supabase || !account) return { ok: false, message: 'Supabase is required for building setup.' };
+  if (!['manager', 'portfolio_admin'].includes(account.role)) return { ok: false, message: 'Only strata managers and portfolio admins can add buildings.' };
+
+  const user = await findUserByEmail(account.email);
+  if (!user?.company_id) return { ok: false, message: 'Supabase company profile not found.' };
+
+  const managerEmail = payload.managerEmail?.trim() || account.email;
+  const manager = await findUserByEmail(managerEmail);
+  if (!manager || manager.company_id !== user.company_id) return { ok: false, message: 'Assigned manager must be an Atlas user in this company.' };
+
+  const building = await supabase.from('buildings').insert({
+    company_id: user.company_id,
+    name: payload.name.trim(),
+    address: payload.address.trim(),
+    suburb: payload.suburb.trim(),
+    state: payload.state.trim() || 'NSW',
+    postcode: payload.postcode.trim(),
+    lots_count: Number(payload.lots) || 0
+  }).select('*').single();
+  if (building.error) return { ok: false, message: building.error.message };
+
+  const membership = await supabase.from('building_memberships').upsert({
+    company_id: user.company_id,
+    building_id: building.data.id,
+    user_id: manager.id,
+    role: 'manager',
+    can_post: true
+  }, { onConflict: 'building_id,user_id,role' });
+  if (membership.error) return { ok: false, message: `Building created, but manager assignment failed: ${membership.error.message}` };
+
+  const contacts = splitLines(payload.contacts).map((line, index) => {
+    const [type, name, detail] = line.split('|').map((value) => value.trim());
+    return {
+      id: `${building.data.id}-contact-${index + 1}`,
+      type: type || 'Building contact',
+      name: name || type || 'Building contact',
+      detail: detail || '',
+      visibility: 'all residents',
+      status: 'active'
+    };
+  });
+  const facilities = splitLines(payload.facilities).map((name, index) => ({
+    id: `${building.data.id}-facility-${index + 1}`,
+    name,
+    description: '',
+    location: '',
+    availability: 'Contact building manager',
+    maxBookingLength: '2 hours',
+    advanceNotice: '24 hours',
+    approvalRequired: true,
+    feePlaceholder: 'No fee configured',
+    capacity: 1,
+    rules: 'Follow building rules and manager instructions.',
+    visibility: 'all residents',
+    status: 'active'
+  }));
+  const issueCategories = splitLines(payload.issueCategories || 'Water leak\nPlumbing\nElectrical\nSecurity\nNoise\nOther').map((label, index) => ({
+    id: `${building.data.id}-issue-${index + 1}`,
+    label,
+    enabled: true,
+    defaultPriority: label.toLowerCase().includes('security') || label.toLowerCase().includes('water') ? 'High' : 'Medium'
+  }));
+
+  const settings = await supabase.from('building_settings').insert({
+    company_id: user.company_id,
+    building_id: building.data.id,
+    local_key: building.data.id,
+    profile: { name: building.data.name, buildingType: 'Residential strata scheme', notes: 'Configured through Atlas building setup.' },
+    facilities,
+    contacts,
+    issue_categories: issueCategories,
+    package_management: { enabled: payload.packageManagement === 'Yes' },
+    renovation_rules: [],
+    compliance_items: [],
+    assets: [],
+    resident_permissions: {
+      leviesVisibleTo: 'owners only',
+      residentsCanPostFeed: false,
+      tenantsCanBookFacilities: true,
+      committeeDocumentsVisible: true
+    },
+    notification_rules: ['Low: in-app only', 'Medium: in-app + email', 'High: in-app + email', 'Critical: in-app + email']
+  });
+  if (settings.error) return { ok: false, message: `Building created, but settings failed: ${settings.error.message}` };
+
+  const starterDocuments = splitLines(payload.starterDocuments).map((line) => {
+    const [title, url] = line.split('|').map((value) => value.trim());
+    return {
+      company_id: user.company_id,
+      building_id: building.data.id,
+      uploaded_by: user.id,
+      category: 'Starter documents',
+      title,
+      file_url: url || 'https://example.com/document-pending-upload',
+      visibility: 'residents',
+      version: 1
+    };
+  });
+  if (starterDocuments.length) {
+    const documents = await supabase.from('documents').insert(starterDocuments);
+    if (documents.error) return { ok: false, message: `Building created, but starter documents failed: ${documents.error.message}` };
+  }
+
+  await insertAudit(user.company_id, building.data.id, user.id, 'CREATE_BUILDING', 'buildings', building.data.id);
+  return { ok: true, message: `${building.data.name} was added and is ready for resident setup.` };
 }
 
 export async function createResidentIssue(account: TestAccount | null, payload?: Partial<ReportIssue> & { description?: string }): Promise<MvpActionResult> {
@@ -379,9 +492,10 @@ export async function createNotice(account: TestAccount | null, payload?: Partia
   const context = await requireUserContext(account);
   if (!context.ok) return context;
   const { user, membership } = context;
+  const buildingId = databaseBuildingId(payload?.buildingId) ?? membership.building_id;
   const notice = await supabase!.from('notices').insert({
     company_id: membership.company_id,
-    building_id: membership.building_id,
+    building_id: buildingId,
     created_by: user.id,
     title: payload?.title ?? 'Building notice',
     body: payload?.body ?? 'Building notice created in Atlas.',
@@ -391,8 +505,8 @@ export async function createNotice(account: TestAccount | null, payload?: Partia
     notification_channels: ['in-app', 'email']
   }).select('id').single();
   if (notice.error) return { ok: false, message: notice.error.message };
-  await notifyRole(membership.company_id, membership.building_id, 'resident', 'notice_created', 'New building notice', payload?.title ?? 'A new notice is available.');
-  await insertAudit(membership.company_id, membership.building_id, user.id, 'CREATE_NOTICE', 'notices', notice.data.id);
+  await notifyRole(membership.company_id, buildingId, 'resident', 'notice_created', 'New building notice', payload?.title ?? 'A new notice is available.');
+  await insertAudit(membership.company_id, buildingId, user.id, 'CREATE_NOTICE', 'notices', notice.data.id);
   return { ok: true, message: 'Notice saved in Supabase.' };
 }
 
@@ -426,19 +540,20 @@ export async function uploadDocument(account: TestAccount | null, payload?: Part
   if (!context.ok) return context;
   const { user, membership } = context;
   const visibility = payload?.status === 'Committee only' ? 'committee' : 'residents';
+  const buildingId = databaseBuildingId(payload?.buildingId) ?? membership.building_id;
   const document = await supabase!.from('documents').insert({
     company_id: membership.company_id,
-    building_id: membership.building_id,
+    building_id: buildingId,
     uploaded_by: user.id,
     category: payload?.meta ?? 'Building documents',
     title: payload?.title ?? 'Building document',
-    file_url: 'https://example.com/atlas-mvp-document.pdf',
+    file_url: payload?.due || 'https://example.com/document-pending-upload',
     visibility,
     version: 1
   }).select('id').single();
   if (document.error) return { ok: false, message: document.error.message };
-  if (visibility === 'residents') await notifyRole(membership.company_id, membership.building_id, 'resident', 'document_uploaded', 'New document available', payload?.title ?? 'A new document is available.');
-  await insertAudit(membership.company_id, membership.building_id, user.id, 'UPLOAD_DOCUMENT', 'documents', document.data.id);
+  if (visibility === 'residents') await notifyRole(membership.company_id, buildingId, 'resident', 'document_uploaded', 'New document available', payload?.title ?? 'A new document is available.');
+  await insertAudit(membership.company_id, buildingId, user.id, 'UPLOAD_DOCUMENT', 'documents', document.data.id);
   return { ok: true, message: 'Document saved in Supabase.' };
 }
 
@@ -610,6 +725,10 @@ function classifySupabaseError(error: { code?: string; message?: string }) {
   return 'Connection error';
 }
 
+function splitLines(value?: string) {
+  return (value ?? '').split('\n').map((line) => line.trim()).filter(Boolean);
+}
+
 function localBuildingId(id?: string | null) {
   const ids: Record<string, string> = {
     '00000000-0000-4000-8000-000000000101': 'b1',
@@ -618,6 +737,16 @@ function localBuildingId(id?: string | null) {
     '00000000-0000-4000-8000-000000000104': 'b4'
   };
   return id ? ids[id] ?? id : 'b1';
+}
+
+function databaseBuildingId(id?: string | null) {
+  const ids: Record<string, string> = {
+    b1: '00000000-0000-4000-8000-000000000101',
+    b2: '00000000-0000-4000-8000-000000000102',
+    b3: '00000000-0000-4000-8000-000000000103',
+    b4: '00000000-0000-4000-8000-000000000104'
+  };
+  return id ? ids[id] ?? id : null;
 }
 
 function localContractorId(id?: string | null) {
@@ -640,6 +769,22 @@ function mapNotice(row: any): Notice {
     channels: row.notification_channels ?? ['in-app'],
     reads: Object.keys(row.read_receipts ?? {}).length,
     body: row.body
+  };
+}
+
+function mapBuilding(row: any): Building {
+  return {
+    id: localBuildingId(row.id),
+    name: row.name,
+    address: `${row.address}, ${row.suburb} ${row.state} ${row.postcode}`,
+    suburb: row.suburb,
+    lots: row.lots_count,
+    manager: 'Assigned strata manager',
+    satisfaction: 0,
+    complaints: 0,
+    maintenanceSpend: 0,
+    arrears: 0,
+    profit: 0
   };
 }
 
@@ -717,7 +862,8 @@ function mapDocument(row: any): SimpleRecord {
     owner: row.uploaded_by_user?.full_name ?? 'Manager',
     status: row.visibility === 'committee' ? 'Committee only' : 'Visible',
     due: row.created_at,
-    meta: row.category
+    meta: row.category,
+    href: row.file_url
   };
 }
 
