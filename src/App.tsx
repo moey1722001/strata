@@ -932,7 +932,7 @@ function ContractorDashboard({ role, data, actions }: { role: Role; data: MvpDat
 function CommunicationsHub({ role, onNavigate, data, actions }: { role: Role; onNavigate: (page: PageId) => void; data: MvpData; actions: FlowActions }) {
   const [activeTab, setActiveTab] = useState<'Feed' | 'Notices' | 'Messages' | 'Alerts'>('Feed');
   const scopedNotices = filterForRole(data.notices, role);
-  const scopedMessages = role === 'resident' || role === 'committee' ? filterPrivateForRole(data.messages, role) : filterForRole(data.messages, role);
+  const scopedMessages = filterForRole(data.messages, role);
   const scopedAlerts = filterForRole(data.notifications, role);
   const tabs = ['Feed', 'Notices', 'Messages', 'Alerts'] as const;
   const recordsByTab: Record<typeof activeTab, SimpleRecord[]> = {
@@ -1140,9 +1140,7 @@ function MyRequestsPage({ role, data, actions }: { role: Role; data: MvpData; ac
 function MessagesPage({ role, data, actions }: { role: Role; data: MvpData; actions: FlowActions }) {
   const records = role === 'contractor'
     ? contractorMessageRecords(data.maintenanceRequests)
-    : role === 'resident' || role === 'committee'
-      ? filterPrivateForRole(data.messages, role)
-      : filterForRole(data.messages, role);
+    : filterForRole(data.messages, role);
   return (
     <div className="space-y-6">
       <SectionHeader eyebrow="Messages" title="Building conversations and manager replies" action={(role === 'resident' || role === 'committee' || role === 'manager') ? <button className="btn-primary" onClick={() => actions.openForm('sendMessage')}><MessageSquare size={17} /> Send message</button> : undefined} />
