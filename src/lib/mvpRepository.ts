@@ -10,6 +10,7 @@ export type MvpData = {
   notices: Notice[];
   reportIssues: ReportIssue[];
   maintenanceRequests: MaintenanceRequest[];
+  contractorUpdates: SimpleRecord[];
   messages: SimpleRecord[];
   documents: SimpleRecord[];
   notifications: SimpleRecord[];
@@ -31,6 +32,7 @@ const emptyData: MvpData = {
   notices: [],
   reportIssues: [],
   maintenanceRequests: [],
+  contractorUpdates: [],
   messages: [],
   documents: [],
   notifications: [],
@@ -145,8 +147,12 @@ export async function loadMvpData(account: TestAccount | null, role: Role): Prom
   const workOrders = workOrderRows.data ?? [];
   const votes = voteRows.data ?? [];
   const contractorUpdates = jobUpdateRows.data ?? [];
-  const noticeData = noticeRows.data ?? [];
-  if (role === 'resident' && noticeData.length) await markNoticesRead(noticeData, user.id);
+  const workflowMessages = messageRows.data ?? [];
+  const noticeData = (noticeRows.data ?? []).filter((notice) => {
+    if (role === 'resident' || role === 'committee') return notice.publication_status !== 'Draft';
+    return true;
+  });
+  if (role === 'resident' && noticeData.length) await markNoticesRead();
   const documentRecords = await Promise.all((documentRows.data ?? []).map(mapDocument));
 
   return {
@@ -155,9 +161,15 @@ export async function loadMvpData(account: TestAccount | null, role: Role): Prom
     reportIssues: (issueRows.data ?? []).map(mapIssue),
     maintenanceRequests: (maintenanceRows.data ?? []).map((row) => {
       const workOrder = workOrders.find((item) => item.maintenance_request_id === row.id);
-      return mapMaintenance(row, workOrder, contractorUpdates.filter((update) => update.work_order_id === workOrder?.id));
+      return mapMaintenance(
+        row,
+        workOrder,
+        contractorUpdates.filter((update) => update.work_order_id === workOrder?.id),
+        workflowMessages.filter((message) => message.linked_entity_type === 'maintenance_requests' && message.linked_entity_id === row.id)
+      );
     }),
-    messages: (messageRows.data ?? []).map(mapMessage),
+    contractorUpdates: contractorUpdates.map(mapContractorUpdate),
+    messages: (messageRows.data ?? []).map((row) => mapMessage(row, user.id)),
     documents: documentRecords,
     notifications: (notificationRows.data ?? []).map((row) => mapSimple(row, row.title, row.event_type)),
     auditLogs: (auditRows.data ?? []).map((row) => mapSimple(row, row.action, row.entity_type)),
@@ -190,7 +202,8 @@ async function loadContractorMvpData(account: TestAccount, userId: string): Prom
       contractor_id: row.contractor_id,
       status: row.status
     }, row, (jobUpdates.data ?? []).filter((update) => update.work_order_id === row.id))),
-    messages: (messagesForContractor.data ?? []).map(mapMessage),
+    contractorUpdates: (jobUpdates.data ?? []).map(mapContractorUpdate),
+    messages: (messagesForContractor.data ?? []).map((row) => mapMessage(row, userId)),
     documents: (documentsForContractor.data ?? []).map((row) => ({
       id: row.id,
       title: row.document_type,
@@ -515,12 +528,15 @@ export async function createNotice(account: TestAccount | null, payload?: Partia
     category: payload?.category ?? 'Announcement',
     priority: payload?.priority ?? 'Medium',
     target_audience: payload?.audience ?? 'all residents',
-    notification_channels: ['in-app', 'email']
+    notification_channels: ['in-app', 'email'],
+    publication_status: payload?.publicationStatus ?? 'Published'
   }).select('id').single();
   if (notice.error) return { ok: false, message: notice.error.message };
-  await notifyRole(membership.company_id, buildingId, 'resident', 'notice_created', 'New building notice', payload?.title ?? 'A new notice is available.');
+  if ((payload?.publicationStatus ?? 'Published') === 'Published') {
+    await notifyRole(membership.company_id, buildingId, 'resident', 'notice_created', 'New building notice', payload?.title ?? 'A new notice is available.');
+  }
   await insertAudit(membership.company_id, buildingId, user.id, 'CREATE_NOTICE', 'notices', notice.data.id);
-  return { ok: true, message: 'Notice saved in Supabase.' };
+  return { ok: true, message: (payload?.publicationStatus ?? 'Published') === 'Draft' ? 'Notice saved as draft.' : 'Notice published.' };
 }
 
 export async function sendResidentMessage(account: TestAccount | null, payload?: Partial<SimpleRecord>): Promise<MvpActionResult> {
@@ -546,6 +562,14 @@ export async function sendResidentMessage(account: TestAccount | null, payload?:
   await insertNotification(messageCompanyId, messageBuildingId, recipient.id, 'message_created', 'New message', payload?.title ?? 'A new message is available.');
   await insertAudit(messageCompanyId, messageBuildingId, user.id, 'SEND_MESSAGE', 'messages', message.data.id);
   return { ok: true, message: 'Message saved in Supabase.' };
+}
+
+export async function markMessagesRead(account: TestAccount | null): Promise<MvpActionResult> {
+  const context = await requireUserContext(account);
+  if (!context.ok) return context;
+  const update = await supabase!.rpc('mark_my_messages_read');
+  if (update.error) return { ok: false, message: update.error.message };
+  return { ok: true, message: 'Messages marked as read.' };
 }
 
 export async function uploadDocument(account: TestAccount | null, payload?: Partial<SimpleRecord> & { file?: File }): Promise<MvpActionResult> {
@@ -744,15 +768,9 @@ async function insertNotification(companyId: string, buildingId: string, userId:
   await supabase.from('notifications').insert({ company_id: companyId, building_id: buildingId, user_id: userId, event_type: eventType, title, body, channels: ['in-app', 'email'] });
 }
 
-async function markNoticesRead(rows: any[], userId: string) {
+async function markNoticesRead() {
   if (!supabase) return;
-  const client = supabase;
-  const readAt = new Date().toISOString();
-  await Promise.all(rows.map(async (row) => {
-    if (row.read_receipts?.[userId]) return;
-    row.read_receipts = { ...(row.read_receipts ?? {}), [userId]: readAt };
-    await client.from('notices').update({ read_receipts: row.read_receipts }).eq('id', row.id);
-  }));
+  await supabase.rpc('mark_my_notices_read');
 }
 
 function classifySupabaseError(error: { code?: string; message?: string }) {
@@ -806,7 +824,8 @@ function mapNotice(row: any): Notice {
     publishAt: row.scheduled_publish_at ?? row.created_at,
     channels: row.notification_channels ?? ['in-app'],
     reads: Object.keys(row.read_receipts ?? {}).length,
-    body: row.body
+    body: row.body,
+    publicationStatus: row.publication_status ?? 'Published'
   };
 }
 
@@ -862,7 +881,7 @@ function mapIssue(row: any): ReportIssue {
   };
 }
 
-function mapMaintenance(row: any, workOrder?: any, jobUpdates: any[] = []): MaintenanceRequest {
+function mapMaintenance(row: any, workOrder?: any, jobUpdates: any[] = [], statusMessages: any[] = []): MaintenanceRequest {
   const currentStatus = workOrder?.status ?? row.status;
   return {
     id: row.id,
@@ -881,20 +900,22 @@ function mapMaintenance(row: any, workOrder?: any, jobUpdates: any[] = []): Main
     timeline: [
       `Submitted by ${row.users?.full_name ?? 'resident'}: ${row.created_at}`,
       `Current status: ${currentStatus}`,
+      ...statusMessages.map((message) => `${message.subject ?? 'Manager update'}: ${message.body}`),
       ...jobUpdates.map((update) => `${update.contractors?.company_name ?? 'Contractor'}: ${update.status} - ${update.body}`)
     ]
   };
 }
 
-function mapMessage(row: any): SimpleRecord {
+function mapMessage(row: any, currentUserId: string): SimpleRecord {
   return {
     id: row.id,
     title: row.subject ?? row.body?.slice(0, 48) ?? 'Message',
     buildingId: localBuildingId(row.building_id),
     owner: row.sender?.full_name ?? 'System',
-    status: row.read_at ? 'Open' : 'Unread',
+    status: row.recipient_id === currentUserId && !row.read_at ? 'Unread' : 'Open',
     due: row.created_at,
-    meta: row.body
+    meta: row.body,
+    createdBy: row.recipient?.full_name ?? 'Building manager'
   };
 }
 
@@ -905,7 +926,7 @@ async function mapDocument(row: any): Promise<SimpleRecord> {
     title: row.title,
     buildingId: localBuildingId(row.building_id),
     owner: row.uploaded_by_user?.full_name ?? 'Manager',
-    status: row.visibility === 'committee' ? 'Committee only' : 'Visible',
+    status: row.visibility === 'committee' ? 'Committee only' : 'All residents',
     due: row.created_at,
     meta: row.category,
     href: signedUrl
@@ -920,7 +941,19 @@ function mapFacilityBooking(row: any): SimpleRecord {
     owner: row.resident?.full_name ?? 'Resident',
     status: row.status,
     due: row.starts_at,
-    meta: row.deposit_placeholder ? `Deposit placeholder ${row.deposit_placeholder}` : 'No fee'
+    meta: row.deposit_placeholder ? `Deposit required: $${row.deposit_placeholder}` : 'No fee'
+  };
+}
+
+function mapContractorUpdate(row: any): SimpleRecord {
+  return {
+    id: row.id,
+    title: row.status ?? 'Contractor update',
+    buildingId: localBuildingId(row.building_id),
+    owner: row.contractors?.company_name ?? 'Contractor',
+    status: 'Review',
+    due: row.created_at,
+    meta: row.body ?? 'Status update submitted by contractor'
   };
 }
 

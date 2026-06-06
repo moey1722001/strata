@@ -13,7 +13,6 @@ import {
   Download,
   Eye,
   FileText,
-  Filter,
   Home,
   Menu,
   MessageSquare,
@@ -47,7 +46,6 @@ import {
   motions,
   navItems,
   notices,
-  notificationChannels,
   notifications,
   packages,
   people,
@@ -70,6 +68,7 @@ import {
   createNotice,
   createResidentIssue,
   loadMvpData,
+  markMessagesRead,
   runSupabaseDiagnostic,
   sendResidentMessage,
   signInTestAccount,
@@ -96,11 +95,13 @@ const statusClasses: Record<string, string> = {
   Submitted: 'bg-blue-50 text-blue-700 ring-blue-200',
   Scheduled: 'bg-indigo-50 text-indigo-700 ring-indigo-200',
   Approved: 'bg-emerald-50 text-emerald-700 ring-emerald-200',
+  Rejected: 'bg-red-50 text-red-700 ring-red-200',
   Closed: 'bg-slate-900 text-white ring-slate-900',
   Completed: 'bg-emerald-50 text-emerald-700 ring-emerald-200',
   Overdue: 'bg-red-50 text-red-700 ring-red-200',
   'Due soon': 'bg-amber-50 text-amber-800 ring-amber-200',
   'In progress': 'bg-blue-50 text-blue-700 ring-blue-200',
+  'In Progress': 'bg-blue-50 text-blue-700 ring-blue-200',
   'Committee Review': 'bg-purple-50 text-purple-700 ring-purple-200',
   'Manager Review': 'bg-blue-50 text-blue-700 ring-blue-200',
   'More Info Required': 'bg-amber-50 text-amber-800 ring-amber-200',
@@ -165,6 +166,7 @@ function App() {
     notices: [],
     reportIssues: [],
     maintenanceRequests: [],
+    contractorUpdates: [],
     messages: [],
     documents: [],
     notifications: [],
@@ -176,7 +178,7 @@ function App() {
     incidents: [],
     buildingConfigurations: []
   });
-  const [actionStatus, setActionStatus] = useState('Workspace ready. Use Switch Role to test each Atlas experience.');
+  const [actionStatus, setActionStatus] = useState('');
   const [activeForm, setActiveForm] = useState<ActiveForm | null>(null);
 
   const devRoleSwitcher = true;
@@ -211,7 +213,7 @@ function App() {
     async function loadWorkspace() {
       try {
         const diagnostic = await runSupabaseDiagnostic(currentAccount);
-        if (active) setActionStatus(diagnostic.message);
+        if (active && !diagnostic.ok) setActionStatus(diagnostic.message);
         const latest = await loadMvpData(currentAccount, role);
         if (active) setMvpData(latest);
       } catch (error) {
@@ -223,6 +225,25 @@ function App() {
       active = false;
     };
   }, [currentAccount, role]);
+
+  useEffect(() => {
+    if (page !== 'messages' || !currentAccount) return;
+    let active = true;
+    async function readMessages() {
+      const result = await markMessagesRead(currentAccount);
+      if (!active) return;
+      if (!result.ok) {
+        setActionStatus(result.message);
+        return;
+      }
+      const latest = await loadMvpData(currentAccount, role);
+      if (active) setMvpData(latest);
+    }
+    void readMessages();
+    return () => {
+      active = false;
+    };
+  }, [page, currentAccount, role]);
 
   async function loginAs(account: TestAccount) {
     const result = await signInTestAccount(account);
@@ -287,7 +308,15 @@ function App() {
     }
     if (activeForm.kind === 'createNotice') {
       const selectedBuilding = [...mvpData.buildings, ...buildings].find((building) => building.name === field('building'));
-      await flowActions.createNotice({ title: field('title'), buildingId: selectedBuilding?.id, category: field('category'), priority: field('priority') as Priority, body: field('body'), audience: field('audience') });
+      await flowActions.createNotice({
+        title: field('title'),
+        buildingId: selectedBuilding?.id,
+        category: field('category'),
+        priority: field('priority') as Priority,
+        body: field('body'),
+        audience: field('audience'),
+        publicationStatus: field('publicationStatus') as Notice['publicationStatus']
+      });
     }
     if (activeForm.kind === 'uploadDocument') {
       const selectedBuilding = [...mvpData.buildings, ...buildings].find((building) => building.name === field('building'));
@@ -365,9 +394,9 @@ function App() {
             <button className="icon-button xl:hidden" onClick={() => setSidebarOpen(true)} aria-label="Open navigation">
               <Menu size={20} />
             </button>
-            <div className="hidden flex-1 items-center gap-3 rounded-full border border-line bg-slate-50 px-4 py-2 text-sm text-slate-500 md:flex">
-              <Search size={17} />
-              <span>Search buildings, contacts, notices, issues, documents...</span>
+            <div className="hidden flex-1 items-center gap-3 text-sm text-slate-500 md:flex">
+              <Building2 size={17} />
+              <span>{buildingConfig.profile.name}</span>
             </div>
             <div className="ml-auto hidden flex-col text-right sm:flex">
               <span className="text-sm font-semibold">{currentAccount?.name ?? 'Signed in'}</span>
@@ -392,18 +421,17 @@ function App() {
             <span className="hidden rounded-full bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-700 ring-1 ring-blue-200 lg:inline-flex">
               Testing Mode
             </span>
-            <button className="icon-button" aria-label="Notifications">
-              <Bell size={18} />
-            </button>
             <div className="hidden h-10 w-10 place-items-center rounded-full bg-primary text-white sm:grid" aria-label="Atlas workspace">
               <AtlasMark className="h-7 w-7" />
             </div>
           </div>
         </header>
         <main className="px-4 py-6 sm:px-6 lg:px-8">
-          <div className="mb-4 rounded-2xl border border-line bg-white px-4 py-3 text-sm text-slate-600 shadow-sm">
-            {actionStatus}
-          </div>
+          {actionStatus && (
+            <div className="mb-4 rounded-2xl border border-line bg-white px-4 py-3 text-sm text-slate-600 shadow-sm">
+              {actionStatus}
+            </div>
+          )}
           <PageRouter page={page} role={role} onNavigate={setPage} data={mvpData} actions={flowActions} buildingConfig={buildingConfig} />
         </main>
       </div>
@@ -429,6 +457,19 @@ function PublicSite({
   setView: (view: 'landing' | 'pricing' | 'login' | 'walkthrough' | 'app') => void;
   loginAs: (account: TestAccount) => void;
 }) {
+  function requestWalkthrough(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const subject = encodeURIComponent(`Atlas walkthrough request from ${String(form.get('company') ?? 'a strata company')}`);
+    const body = encodeURIComponent([
+      `Name: ${String(form.get('name') ?? '')}`,
+      `Company: ${String(form.get('company') ?? '')}`,
+      `Work email: ${String(form.get('email') ?? '')}`,
+      `Buildings managed: ${String(form.get('buildings') ?? '')}`
+    ].join('\n'));
+    window.location.href = `mailto:hello@atlasstrata.com.au?subject=${subject}&body=${body}`;
+  }
+
   return (
     <div className="min-h-screen bg-white text-ink">
       <header className="sticky top-0 z-30 border-b border-line bg-white/90 backdrop-blur">
@@ -548,14 +589,19 @@ function PublicSite({
             <h1 className="mt-5 text-4xl font-semibold tracking-tight">Show Atlas to your portfolio team</h1>
             <p className="mt-4 text-slate-600">Tell us about your portfolio and we will tailor a walkthrough for your strata team.</p>
           </div>
-          <form className="rounded-3xl border border-line bg-white p-6 shadow-soft">
-            {['Name', 'Company', 'Work email', 'Buildings managed'].map((label) => (
-              <label className="mb-4 block" key={label}>
+          <form className="rounded-3xl border border-line bg-white p-6 shadow-soft" onSubmit={requestWalkthrough}>
+            {[
+              ['name', 'Name', 'text'],
+              ['company', 'Company', 'text'],
+              ['email', 'Work email', 'email'],
+              ['buildings', 'Buildings managed', 'number']
+            ].map(([name, label, type]) => (
+              <label className="mb-4 block" key={name}>
                 <span className="text-sm font-medium text-slate-600">{label}</span>
-                <input className="mt-2 w-full rounded-2xl border border-line px-4 py-3 outline-none focus:border-harbour" placeholder={label} />
+                <input className="mt-2 w-full rounded-2xl border border-line px-4 py-3 outline-none focus:border-harbour" name={name} type={type} placeholder={label} required />
               </label>
             ))}
-            <button type="button" className="w-full btn-primary">
+            <button type="submit" className="w-full btn-primary">
               Send request
             </button>
           </form>
@@ -567,7 +613,7 @@ function PublicSite({
 
 function PageRouter({ page, role, onNavigate, data, actions, buildingConfig }: { page: PageId; role: Role; onNavigate: (page: PageId) => void; data: MvpData; actions: FlowActions; buildingConfig: BuildingConfiguration }) {
   if (page === 'portfolio' && role === 'super_admin') return <PlatformDashboard onNavigate={onNavigate} data={data} />;
-  if (page === 'portfolio' && role === 'manager') return <ManagerDashboard onNavigate={onNavigate} data={data} actions={actions} />;
+  if (page === 'portfolio' && (role === 'manager' || role === 'portfolio_admin')) return <ManagerDashboard role={role} onNavigate={onNavigate} data={data} actions={actions} />;
   if (page === 'portfolio') return <PortfolioDashboard role={role} onNavigate={onNavigate} data={data} />;
   if (page === 'buildings') return <BuildingsPage role={role} data={data} actions={actions} onNavigate={onNavigate} />;
   if (page === 'building' && (role === 'manager' || role === 'portfolio_admin')) return <BuildingDashboard role={role} data={data} buildingConfig={buildingConfig} />;
@@ -671,31 +717,263 @@ function PlatformDashboard({ onNavigate, data }: { onNavigate: (page: PageId) =>
   );
 }
 
-function ManagerDashboard({ onNavigate, data, actions }: { onNavigate: (page: PageId) => void; data: MvpData; actions: FlowActions }) {
-  const assignedBuildings = data.buildings.length ? data.buildings : buildings.filter((building) => roleBuildingScope.manager.includes(building.id));
-  const openIssues = data.maintenanceRequests.filter((request) => !['Completed', 'Closed', 'Rejected'].includes(request.status));
-  const overdue = openIssues.filter((request) => request.overdue);
-  const emergencyIssues = data.reportIssues.filter((issue) => issue.severity === 'Emergency' || issue.severity === 'High');
+type ManagerActionItem = {
+  id: string;
+  group: string;
+  title: string;
+  context: string;
+  urgency: 'Critical' | 'High' | 'Medium' | 'Low';
+  due?: string;
+  actionLabel: string;
+  onClick: () => void;
+};
+
+const managerUrgencyRank: Record<ManagerActionItem['urgency'], number> = {
+  Critical: 0,
+  High: 1,
+  Medium: 2,
+  Low: 3
+};
+
+function ManagerDashboard({ role, onNavigate, data, actions }: { role: Role; onNavigate: (page: PageId) => void; data: MvpData; actions: FlowActions }) {
   const unreadMessages = data.messages.filter((message) => message.status === 'Unread');
+  const overdueRequests = data.maintenanceRequests.filter((request) => request.overdue && !['Completed', 'Closed', 'Rejected'].includes(request.status));
+  const awaitingAssignment = data.maintenanceRequests.filter((request) => !request.contractorId && !request.overdue && !['Completed', 'Closed', 'Rejected'].includes(request.status));
+  const contractorUpdates = [...data.contractorUpdates].sort((a, b) => recordTime(b.due) - recordTime(a.due)).slice(0, 6);
+  const pendingBookings = data.facilityBookings.filter((booking) => ['Submitted', 'Pending', 'Requested'].includes(booking.status));
+  const draftNotices = data.notices.filter((notice) => notice.publicationStatus === 'Draft');
+  const documentsForReview = data.documents.filter((document) => ['Review', 'Pending review'].includes(document.status));
+  const completedJobs = data.maintenanceRequests.filter((request) => ['Completed', 'Closed'].includes(request.status)).slice(0, 4);
+  const approvedBookings = data.facilityBookings.filter((booking) => booking.status === 'Approved').slice(0, 4);
+  const publishedNotices = data.notices.filter((notice) => notice.publicationStatus !== 'Draft').slice(0, 4);
+
+  const attentionItems: ManagerActionItem[] = [
+    ...unreadMessages.map((message) => ({
+      id: `message-${message.id}`,
+      group: 'Unread resident message',
+      title: message.title,
+      context: `${message.owner} · ${buildingName(message.buildingId)} · ${message.meta ?? 'New message'}`,
+      urgency: messageRequiresImmediateResponse(message) ? 'Critical' as const : 'Medium' as const,
+      due: message.due,
+      actionLabel: 'Reply',
+      onClick: () => onNavigate('messages')
+    })),
+    ...overdueRequests.map((request) => ({
+      id: `overdue-${request.id}`,
+      group: 'Overdue maintenance request',
+      title: request.title,
+      context: `${request.unit} · ${request.category} · ${request.status}`,
+      urgency: request.priority === 'Emergency' ? 'Critical' as const : 'High' as const,
+      due: request.submitted,
+      actionLabel: request.contractorId ? 'Review job' : 'Assign contractor',
+      onClick: () => request.contractorId
+        ? onNavigate('maintenance')
+        : actions.openForm('assignContractor', { id: request.id, title: request.title })
+    })),
+    ...awaitingAssignment.map((request) => ({
+      id: `assignment-${request.id}`,
+      group: 'Awaiting contractor assignment',
+      title: request.title,
+      context: `${request.unit} · ${request.category} · ${request.resident}`,
+      urgency: request.priority === 'Emergency' ? 'Critical' as const : request.priority === 'High' ? 'High' as const : 'Medium' as const,
+      due: request.submitted,
+      actionLabel: 'Assign contractor',
+      onClick: () => actions.openForm('assignContractor', { id: request.id, title: request.title })
+    })),
+    ...contractorUpdates.map((update) => ({
+      id: `contractor-update-${update.id}`,
+      group: 'Contractor update awaiting review',
+      title: update.title,
+      context: `${update.owner} · ${update.meta ?? 'Review update'}`,
+      urgency: 'High' as const,
+      due: update.due,
+      actionLabel: 'Review job',
+      onClick: () => onNavigate('maintenance')
+    })),
+    ...pendingBookings.map((booking) => ({
+      id: `booking-${booking.id}`,
+      group: 'Facility booking awaiting approval',
+      title: booking.title,
+      context: `${booking.owner} · ${formatDate(booking.due)} · ${booking.meta ?? 'Booking request'}`,
+      urgency: 'High' as const,
+      due: booking.due,
+      actionLabel: 'Approve or reject',
+      onClick: () => onNavigate('facilities')
+    })),
+    ...draftNotices.map((notice) => ({
+      id: `draft-notice-${notice.id}`,
+      group: 'Draft notice',
+      title: notice.title,
+      context: `${notice.audience} · ${notice.body.slice(0, 80)}`,
+      urgency: 'Low' as const,
+      due: notice.publishAt,
+      actionLabel: 'Open communications',
+      onClick: () => onNavigate('communications')
+    })),
+    ...documentsForReview.map((document) => ({
+      id: `document-review-${document.id}`,
+      group: 'Document visibility review',
+      title: document.title,
+      context: `${document.owner} · ${document.status} · ${document.meta ?? 'Document library'}`,
+      urgency: 'Medium' as const,
+      due: document.due,
+      actionLabel: 'Review visibility',
+      onClick: () => onNavigate('documents')
+    }))
+  ].sort(sortManagerActions);
+
+  const recentItems: ManagerActionItem[] = [
+    ...data.messages.slice(0, 2).map((message) => managerRecordAction(message, 'Latest resident message', 'Low', 'Open conversation', () => onNavigate('messages'))),
+    ...data.maintenanceRequests.slice(0, 2).map((request) => ({
+      id: `recent-maintenance-${request.id}`,
+      group: 'Latest maintenance request',
+      title: request.title,
+      context: `${request.unit} · ${request.category} · ${request.status}`,
+      urgency: request.priority === 'Emergency' ? 'Critical' as const : 'Low' as const,
+      due: request.submitted,
+      actionLabel: 'Open maintenance',
+      onClick: () => onNavigate('maintenance')
+    })),
+    ...contractorUpdates.slice(0, 2).map((update) => managerRecordAction(update, 'Latest contractor update', 'Low', 'Review update', () => onNavigate('maintenance'))),
+    ...data.facilityBookings.slice(0, 2).map((booking) => managerRecordAction(booking, 'Latest facility booking', 'Low', 'Open booking', () => onNavigate('facilities'))),
+    ...data.notices.slice(0, 2).map((notice) => ({
+      id: `recent-notice-${notice.id}`,
+      group: 'Latest notice',
+      title: notice.title,
+      context: `${notice.category} · ${notice.audience}`,
+      urgency: notice.priority === 'Emergency' ? 'Critical' as const : notice.priority,
+      due: notice.publishAt,
+      actionLabel: 'Open notice',
+      onClick: () => onNavigate('communications')
+    })),
+    ...data.documents.slice(0, 2).map((document) => managerRecordAction(document, 'Latest uploaded document', 'Low', 'Open document', () => onNavigate('documents')))
+  ].sort((a, b) => recordTime(b.due) - recordTime(a.due));
+
+  const completedItems: ManagerActionItem[] = [
+    ...completedJobs.map((request) => ({
+      id: `completed-job-${request.id}`,
+      group: 'Recently completed job',
+      title: request.title,
+      context: `${request.unit} · ${request.contractorId ? contractors.find((contractor) => contractor.id === request.contractorId)?.company : 'Contractor'} · ${request.status}`,
+      urgency: 'Low' as const,
+      due: request.submitted,
+      actionLabel: 'Review history',
+      onClick: () => onNavigate('maintenance')
+    })),
+    ...approvedBookings.map((booking) => managerRecordAction(booking, 'Recently approved booking', 'Low', 'View booking', () => onNavigate('facilities'))),
+    ...publishedNotices.map((notice) => ({
+      id: `published-notice-${notice.id}`,
+      group: 'Recently published notice',
+      title: notice.title,
+      context: `${notice.category} · ${notice.reads} read receipt${notice.reads === 1 ? '' : 's'}`,
+      urgency: 'Low' as const,
+      due: notice.publishAt,
+      actionLabel: 'View notice',
+      onClick: () => onNavigate('communications')
+    }))
+  ].sort((a, b) => recordTime(b.due) - recordTime(a.due));
+
   return (
     <div className="space-y-6">
-      <SectionHeader eyebrow="Sandbox manager workspace" title="Atlas Residences" action={<button className="btn-primary" onClick={() => actions.openForm('createNotice')}><Bell size={17} /> Create notice</button>} />
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <Metric title="Building" value={assignedBuildings[0]?.name ?? 'Atlas Residences'} detail="Single-building sandbox" icon={Building2} />
-        <Metric title="Open maintenance" value={openIssues.length.toString()} detail={`${overdue.length} overdue`} icon={AlertTriangle} tone="amber" />
-        <Metric title="Unread messages" value={unreadMessages.length.toString()} detail="Resident conversations" icon={MessageSquare} tone="blue" />
-        <Metric title="Documents" value={data.documents.length.toString()} detail="Resident-visible files" icon={FileText} tone="green" />
-      </div>
-      <div className="grid gap-5 xl:grid-cols-[1.2fr_0.8fr]">
-        <Panel title="Issue triage queue" action={<button className="btn-secondary" onClick={() => onNavigate('maintenance')}><ArrowRight size={16} /> Open maintenance</button>}>
-          <ReportIssueList issues={data.reportIssues} managerView actions={actions} />
-        </Panel>
-        <Panel title="Recent resident messages" action={<button className="btn-secondary" onClick={() => onNavigate('messages')}><ArrowRight size={16} /> Open inbox</button>}>
-          <RecordTable records={data.messages.slice(0, 5)} />
-        </Panel>
-      </div>
+      <SectionHeader
+        eyebrow={role === 'portfolio_admin' ? 'Portfolio admin' : 'Strata manager'}
+        title="What needs attention right now?"
+        action={<button className="btn-primary" onClick={() => actions.openForm('createNotice')}><Bell size={17} /> Create notice</button>}
+      />
+      <ManagerActionSection title="Attention required" items={attentionItems} emptyCopy="No unread messages, overdue work, pending bookings or workflow reviews." />
+      <ManagerActionSection title="Recent activity" items={recentItems} emptyCopy="New resident, contractor and manager activity will appear here." />
+      <ManagerActionSection title="Completed recently" items={completedItems} emptyCopy="Completed jobs, approved bookings and published notices will appear here." />
     </div>
   );
+}
+
+function ManagerActionSection({ title, items, emptyCopy }: { title: string; items: ManagerActionItem[]; emptyCopy: string }) {
+  if (!items.length) {
+    return (
+      <Panel title={title}>
+        <p className="py-6 text-sm text-slate-500">{emptyCopy}</p>
+      </Panel>
+    );
+  }
+
+  return (
+    <Panel title={title}>
+      <div className="divide-y divide-line">
+        {items.map((item) => (
+          <button key={item.id} className="grid w-full gap-4 py-4 text-left transition hover:bg-slate-50 sm:grid-cols-[140px_1fr_auto]" onClick={item.onClick}>
+            <div className="flex items-start gap-2">
+              <ManagerUrgencyBadge urgency={item.urgency} />
+            </div>
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">{item.group}</p>
+              <h3 className="mt-1 font-semibold text-ink">{item.title}</h3>
+              <p className="mt-1 text-sm leading-6 text-slate-600">{item.context}</p>
+              {item.due && <p className="mt-2 text-xs text-slate-500">{formatDate(item.due)}</p>}
+            </div>
+            <span className="inline-flex items-center justify-end gap-2 text-sm font-semibold text-harbour">
+              {item.actionLabel}
+              <ArrowRight size={16} />
+            </span>
+          </button>
+        ))}
+      </div>
+    </Panel>
+  );
+}
+
+function ManagerUrgencyBadge({ urgency }: { urgency: ManagerActionItem['urgency'] }) {
+  const classes: Record<ManagerActionItem['urgency'], string> = {
+    Critical: 'bg-red-50 text-red-700 ring-red-200',
+    High: 'bg-amber-50 text-amber-800 ring-amber-200',
+    Medium: 'bg-blue-50 text-blue-700 ring-blue-200',
+    Low: 'bg-slate-100 text-slate-700 ring-slate-200'
+  };
+  return <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ${classes[urgency]}`}>{urgency}</span>;
+}
+
+function managerRecordAction(record: SimpleRecord, group: string, urgency: ManagerActionItem['urgency'], actionLabel: string, onClick: () => void): ManagerActionItem {
+  return {
+    id: `${group}-${record.id}`,
+    group,
+    title: record.title,
+    context: `${record.owner} · ${record.status} · ${record.meta ?? buildingName(record.buildingId)}`,
+    urgency,
+    due: record.due,
+    actionLabel,
+    onClick
+  };
+}
+
+function sortManagerActions(a: ManagerActionItem, b: ManagerActionItem) {
+  return managerUrgencyRank[a.urgency] - managerUrgencyRank[b.urgency] || recordTime(b.due) - recordTime(a.due);
+}
+
+function messageRequiresImmediateResponse(message: SimpleRecord) {
+  return /complaint|emergency|urgent|unsafe|danger/i.test(`${message.title} ${message.meta ?? ''}`);
+}
+
+function recordTime(value?: string) {
+  const time = new Date(value ?? '').getTime();
+  return Number.isFinite(time) ? time : 0;
+}
+
+function formatDate(value?: string) {
+  if (!value) return 'No date set';
+  const time = new Date(value).getTime();
+  if (!Number.isFinite(time)) return value;
+  return new Intl.DateTimeFormat('en-AU', { day: 'numeric', month: 'short', year: 'numeric' }).format(new Date(time));
+}
+
+function formatDateTime(value?: string) {
+  if (!value) return 'Time unavailable';
+  const time = new Date(value).getTime();
+  if (!Number.isFinite(time)) return value;
+  return new Intl.DateTimeFormat('en-AU', {
+    day: 'numeric',
+    month: 'short',
+    hour: 'numeric',
+    minute: '2-digit'
+  }).format(new Date(time));
 }
 
 function PortfolioDashboard({ role, onNavigate, data }: { role: Role; onNavigate: (page: PageId) => void; data: MvpData }) {
@@ -809,52 +1087,104 @@ function BuildingDashboard({ role, data, buildingConfig }: { role: Role; data: M
 }
 
 function ResidentDashboard({ role, onNavigate, data, actions, buildingConfig }: { role: Role; onNavigate: (page: PageId) => void; data: MvpData; actions: FlowActions; buildingConfig: BuildingConfiguration }) {
-  const feed = data.notices;
-  const ownRequests = data.maintenanceRequests;
-  const quickActions: [string, PageId][] = [
-    ['See notices', 'communications'],
-    ['Report an issue', 'report_issue'],
-    ['View documents', 'documents'],
-    ['Book BBQ Area', 'facilities'],
-    ['Track requests', 'my_requests'],
-    ['Message manager', 'messages']
-  ];
+  const latestNotice = data.notices[0];
+  const openRequests = data.maintenanceRequests.filter((request) => !['Completed', 'Closed', 'Rejected'].includes(request.status));
+  const latestMessages = data.messages.slice(0, 3);
+  const latestBooking = data.facilityBookings[0];
+  const recentDocuments = data.documents.slice(0, 3);
+
   return (
     <div className="mx-auto max-w-5xl space-y-5">
       <SectionHeader eyebrow="Resident home" title={buildingConfig.profile.name} action={<button className="btn-primary" onClick={() => actions.openForm('reportIssue')}><Plus size={17} /> Report issue</button>} />
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <Metric title="Latest notice" value={feed[0] ? 'New' : 'Clear'} detail={feed[0]?.title ?? 'No current notices'} icon={Bell} />
-        <Metric title="Open request" value={ownRequests[0]?.status ?? 'Clear'} detail={ownRequests[0]?.title ?? 'No active requests'} icon={Clock3} tone="amber" />
-        <Metric title="Documents" value={data.documents.length.toString()} detail="Building documents available" icon={FileText} tone="blue" />
-        <Metric title="Building contact" value={visibleContacts(buildingConfig, role)[0]?.type ?? 'Directory'} detail={visibleContacts(buildingConfig, role)[0]?.name ?? 'Configured per building'} icon={MessageSquare} tone="green" />
-      </div>
-      <div className="grid gap-5 lg:grid-cols-[1.1fr_0.9fr]">
-        <Panel title="Building feed">
-          <div className="space-y-3">
-            {feed.slice(0, 6).map((notice) => (
-              <article className="rounded-2xl border border-line p-4" key={notice.id}>
-                <div className="flex items-center justify-between gap-3">
-                  <Badge label={notice.category} tone={notice.priority} />
-                  <span className="text-xs text-slate-500">{notice.publishAt}</span>
+      <div className="grid gap-5 lg:grid-cols-2">
+        <Panel title="Latest notice" className="lg:col-span-2">
+          {latestNotice ? (
+            <button className="flex w-full items-start justify-between gap-4 py-2 text-left" onClick={() => onNavigate('communications')}>
+              <div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge label={latestNotice.category} tone={latestNotice.priority} />
+                  <span className="text-xs text-slate-500">{formatDate(latestNotice.publishAt)}</span>
                 </div>
-                <h3 className="mt-3 font-semibold">{notice.title}</h3>
-                <p className="mt-1 text-sm leading-6 text-slate-600">{notice.body}</p>
-              </article>
-            ))}
-          </div>
+                <h2 className="mt-3 text-lg font-semibold">{latestNotice.title}</h2>
+                <p className="mt-2 line-clamp-2 text-sm leading-6 text-slate-600">{latestNotice.body}</p>
+              </div>
+              <ArrowRight className="mt-1 shrink-0 text-harbour" size={18} />
+            </button>
+          ) : <ResidentEmpty copy="There are no current building notices." action="View notices" onClick={() => onNavigate('communications')} />}
         </Panel>
-        <Panel title="Your quick actions">
-          <div className="grid gap-3">
-            {quickActions.map(([label, target]) => (
-              <button className="flex items-center justify-between rounded-2xl border border-line px-4 py-3 text-left hover:bg-slate-50" key={label} onClick={() => onNavigate(target as PageId)}>
-                <span className="font-medium">{label}</span>
-                <ArrowRight size={17} />
-              </button>
-            ))}
-          </div>
+
+        <Panel title="Open maintenance requests">
+          {openRequests.length ? (
+            <div className="divide-y divide-line">
+              {openRequests.slice(0, 3).map((request) => (
+                <button className="flex w-full items-center justify-between gap-4 py-3 text-left" key={request.id} onClick={() => onNavigate('my_requests')}>
+                  <div>
+                    <p className="font-semibold">{request.title}</p>
+                    <p className="mt-1 text-sm text-slate-500">{request.status} · Updated {formatDate(request.submitted)}</p>
+                  </div>
+                  <Badge label={request.status} tone={request.priority} />
+                </button>
+              ))}
+            </div>
+          ) : <ResidentEmpty copy="You have no open maintenance requests." action="Report an issue" onClick={() => actions.openForm('reportIssue')} />}
         </Panel>
-        <DirectoryPanel buildingConfig={buildingConfig} role={role} className="lg:col-span-2" />
+
+        <Panel title="Messages" action={<button className="text-sm font-semibold text-harbour" onClick={() => actions.openForm('sendMessage')}>Message manager</button>}>
+          {latestMessages.length ? (
+            <div className="divide-y divide-line">
+              {latestMessages.map((message) => (
+                <button className="flex w-full items-center justify-between gap-4 py-3 text-left" key={message.id} onClick={() => onNavigate('messages')}>
+                  <div>
+                    <p className="font-semibold">{message.title}</p>
+                    <p className="mt-1 line-clamp-1 text-sm text-slate-500">{message.meta}</p>
+                  </div>
+                  <div className="text-right">
+                    {message.status === 'Unread' && <Badge label="Unread" />}
+                    <p className="mt-1 text-xs text-slate-400">{formatDate(message.due)}</p>
+                  </div>
+                </button>
+              ))}
+            </div>
+          ) : <ResidentEmpty copy="No messages yet." action="Message manager" onClick={() => actions.openForm('sendMessage')} />}
+        </Panel>
+
+        <Panel title="Facility bookings">
+          {latestBooking ? (
+            <button className="flex w-full items-center justify-between gap-4 py-2 text-left" onClick={() => onNavigate('facilities')}>
+              <div>
+                <p className="font-semibold">{latestBooking.title}</p>
+                <p className="mt-1 text-sm text-slate-500">{formatDate(latestBooking.due)}</p>
+              </div>
+              <Badge label={latestBooking.status} />
+            </button>
+          ) : <ResidentEmpty copy="You have no facility bookings." action="Request a booking" onClick={() => onNavigate('facilities')} />}
+        </Panel>
+
+        <Panel title="Recent documents" action={<button className="text-sm font-semibold text-harbour" onClick={() => onNavigate('documents')}>View all</button>}>
+          {recentDocuments.length ? (
+            <div className="divide-y divide-line">
+              {recentDocuments.map((document) => (
+                <button className="flex w-full items-center justify-between gap-4 py-3 text-left" key={document.id} onClick={() => onNavigate('documents')}>
+                  <div>
+                    <p className="font-semibold">{document.title}</p>
+                    <p className="mt-1 text-sm text-slate-500">{document.meta} · {formatDate(document.due)}</p>
+                  </div>
+                  <FileText className="shrink-0 text-harbour" size={18} />
+                </button>
+              ))}
+            </div>
+          ) : <ResidentEmpty copy="No building documents are available yet." action="Open documents" onClick={() => onNavigate('documents')} />}
+        </Panel>
       </div>
+    </div>
+  );
+}
+
+function ResidentEmpty({ copy, action, onClick }: { copy: string; action: string; onClick: () => void }) {
+  return (
+    <div className="flex items-center justify-between gap-4 py-3">
+      <p className="text-sm text-slate-500">{copy}</p>
+      <button className="shrink-0 text-sm font-semibold text-harbour" onClick={onClick}>{action}</button>
     </div>
   );
 }
@@ -879,7 +1209,6 @@ function CommitteeDashboard({ role, onNavigate, data, actions }: { role: Role; o
                 <p className="mt-1 text-sm text-slate-500">{motion.meta}</p>
                 <div className="mt-4 flex gap-2">
                   <button className="btn-secondary" onClick={() => actions.openForm('voteMotion', { id: motion.id, title: motion.title })}>Vote</button>
-                  <ComingSoonButton label="Abstain" />
                 </div>
               </div>
             ))}
@@ -915,10 +1244,10 @@ function CommunicationsHub({ role, onNavigate, data, actions }: { role: Role; on
   return (
     <div className="space-y-6">
       <SectionHeader eyebrow="Notices" title="Atlas Residences notices" action={(role === 'manager' || role === 'portfolio_admin' || role === 'super_admin') ? <button className="btn-primary" onClick={() => actions.openForm('createNotice')}><Plus size={17} /> Create notice</button> : undefined} />
-      <Panel title="Published notices" action={<NotificationRules />}>
+      <Panel title={(role === 'manager' || role === 'portfolio_admin' || role === 'super_admin') ? 'Notices' : 'Published notices'}>
         {scopedNotices.length ? (
           <div className="grid gap-4 lg:grid-cols-2">
-            {scopedNotices.map((notice) => <NoticeCard notice={notice} key={notice.id} />)}
+            {scopedNotices.map((notice) => <NoticeCard notice={notice} role={role} key={notice.id} />)}
           </div>
         ) : <EmptyState title="No notices yet" copy="Managers can create the first Atlas Residences notice from this page." />}
       </Panel>
@@ -1079,9 +1408,7 @@ function MyRequestsPage({ role, data, actions }: { role: Role; data: MvpData; ac
   return (
     <div className="mx-auto max-w-5xl space-y-6">
       <SectionHeader eyebrow="My Requests" title="Track reported issues" action={<button className="btn-primary" onClick={() => actions.openForm('reportIssue')}><Plus size={17} /> Report issue</button>} />
-      <Panel title="Request progress">
-        <ReportIssueList issues={data.reportIssues} />
-      </Panel>
+      <MaintenanceCards requests={data.maintenanceRequests} />
     </div>
   );
 }
@@ -1090,20 +1417,23 @@ function MessagesPage({ role, data, actions }: { role: Role; data: MvpData; acti
   const records = role === 'contractor'
     ? contractorMessageRecords(data.maintenanceRequests)
     : data.messages;
+  const accountName = testAccounts.find((account) => account.role === role)?.name ?? '';
   return (
-    <div className="space-y-6">
-      <SectionHeader eyebrow="Messages" title="Building conversations and manager replies" action={(role === 'resident' || role === 'committee' || role === 'manager') ? <button className="btn-primary" onClick={() => actions.openForm('sendMessage')}><MessageSquare size={17} /> Send message</button> : undefined} />
-      <Panel title="Conversations">
-        <RecordTable records={records} />
+    <div className="mx-auto max-w-5xl space-y-6">
+      <SectionHeader eyebrow="Messages" title={role === 'manager' ? 'Resident conversation' : 'Message your strata manager'} action={(role === 'resident' || role === 'committee' || role === 'manager') ? <button className="btn-primary" onClick={() => actions.openForm('sendMessage')}><MessageSquare size={17} /> {role === 'manager' ? 'Reply' : 'Send message'}</button> : undefined} />
+      <Panel title="Conversation history">
+        <MessageThread records={records} accountName={accountName} />
       </Panel>
     </div>
   );
 }
 
 function DocumentsPage({ role, data, actions }: { role: Role; data: MvpData; actions: FlowActions }) {
+  const [query, setQuery] = useState('');
   const records = role === 'contractor'
     ? contractorDocumentRecords(data.maintenanceRequests)
     : data.documents;
+  const filtered = records.filter((record) => `${record.title} ${record.meta ?? ''}`.toLowerCase().includes(query.trim().toLowerCase()));
   return (
     <div className="space-y-6">
       <SectionHeader
@@ -1111,9 +1441,71 @@ function DocumentsPage({ role, data, actions }: { role: Role; data: MvpData; act
         title={role === 'resident' ? 'Building documents' : 'Document library'}
         action={(role === 'manager' || role === 'portfolio_admin') ? <button className="btn-primary" onClick={() => actions.openForm('uploadDocument')}><Plus size={17} /> Upload document</button> : undefined}
       />
-      <Panel title="Available documents">
-        <RecordTable records={records} />
+      <Panel title="Available documents" action={records.length ? <span className="text-sm text-slate-500">{records.length} file{records.length === 1 ? '' : 's'}</span> : undefined}>
+        <label className="mb-5 flex items-center gap-3 rounded-2xl border border-line bg-slate-50 px-4 py-3">
+          <Search size={17} className="text-slate-400" />
+          <input className="w-full bg-transparent text-sm outline-none" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search documents by name or category" />
+        </label>
+        <DocumentList records={filtered} />
       </Panel>
+    </div>
+  );
+}
+
+function MessageThread({ records, accountName }: { records: SimpleRecord[]; accountName: string }) {
+  if (!records.length) {
+    return <EmptyState title="No messages yet" copy="Start a conversation and replies will remain here after refresh." />;
+  }
+
+  return (
+    <div className="space-y-4">
+      {[...records].sort((a, b) => recordTime(a.due) - recordTime(b.due)).map((message) => {
+        const isOwnMessage = message.owner === accountName;
+        return (
+          <article className={`flex ${isOwnMessage ? 'justify-end' : 'justify-start'}`} key={message.id}>
+            <div className={`max-w-[88%] rounded-2xl px-4 py-3 sm:max-w-[72%] ${isOwnMessage ? 'bg-primary text-white' : 'border border-line bg-slate-50 text-ink'}`}>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <p className={`text-xs font-semibold ${isOwnMessage ? 'text-white/75' : 'text-slate-500'}`}>{isOwnMessage ? 'You' : message.owner}</p>
+                {message.status === 'Unread' && !isOwnMessage && <span className="rounded-full bg-red-100 px-2 py-0.5 text-[11px] font-semibold text-red-700">Unread</span>}
+              </div>
+              <p className="mt-1 font-semibold">{message.title}</p>
+              <p className={`mt-2 text-sm leading-6 ${isOwnMessage ? 'text-white/90' : 'text-slate-600'}`}>{message.meta}</p>
+              <p className={`mt-2 text-xs ${isOwnMessage ? 'text-white/65' : 'text-slate-400'}`}>{formatDateTime(message.due)}</p>
+            </div>
+          </article>
+        );
+      })}
+    </div>
+  );
+}
+
+function DocumentList({ records }: { records: SimpleRecord[] }) {
+  if (!records.length) {
+    return <EmptyState title="No documents found" copy="Try another search, or upload the first building document." />;
+  }
+
+  return (
+    <div className="divide-y divide-line">
+      {records.map((document) => (
+        <article className="flex flex-col gap-4 py-4 sm:flex-row sm:items-center sm:justify-between" key={document.id}>
+          <div className="flex min-w-0 items-start gap-3">
+            <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-blue-50 text-harbour">
+              <FileText size={18} />
+            </span>
+            <div className="min-w-0">
+              <h3 className="truncate font-semibold">{document.title}</h3>
+              <p className="mt-1 text-sm text-slate-500">{document.meta} · Uploaded {formatDate(document.due)}</p>
+              <div className="mt-2"><Badge label={document.status} /></div>
+            </div>
+          </div>
+          {document.href ? (
+            <div className="flex shrink-0 gap-2">
+              <a className="btn-secondary" href={document.href} target="_blank" rel="noreferrer"><Eye size={16} /> View</a>
+              <a className="btn-secondary" href={document.href} download><Download size={16} /> Download</a>
+            </div>
+          ) : <span className="text-sm text-slate-500">File unavailable</span>}
+        </article>
+      ))}
     </div>
   );
 }
@@ -1162,7 +1554,7 @@ function FacilitiesPage({ role, data, actions, buildingConfig }: { role: Role; d
     <div className="space-y-6">
       <SectionHeader
         eyebrow="Facility Bookings"
-        title="BBQ Area bookings"
+        title="Facility bookings"
         action={role === 'resident' && residentCanBook ? <button className="btn-primary" onClick={() => actions.openForm('bookFacility')}><Plus size={17} /> Request booking</button> : undefined}
       />
       {role === 'resident' && (
@@ -1193,36 +1585,45 @@ function FacilitiesPage({ role, data, actions, buildingConfig }: { role: Role; d
       )}
       {role === 'resident' && (
         <Panel title="My bookings">
-          <RecordTable records={records} />
+          {records.length ? (
+            <div className="divide-y divide-line">
+              {records.map((booking) => (
+                <div className="flex items-center justify-between gap-4 py-4" key={booking.id}>
+                  <div>
+                    <p className="font-semibold">{booking.title}</p>
+                    <p className="mt-1 text-sm text-slate-500">{formatDate(booking.due)}</p>
+                    {booking.meta && <p className="mt-1 text-sm text-slate-600">{booking.meta}</p>}
+                  </div>
+                  <Badge label={booking.status} />
+                </div>
+              ))}
+            </div>
+          ) : <ResidentEmpty copy="You have no facility bookings." action="Request a booking" onClick={() => actions.openForm('bookFacility')} />}
         </Panel>
       )}
       {(role === 'manager' || role === 'portfolio_admin' || role === 'super_admin') && (
-        <div className="grid gap-5 xl:grid-cols-[0.9fr_1.1fr]">
-          <Panel title="Configured facility">
-            <RecordTable records={buildingConfig.facilities.map((facility) => ({
-              id: facility.id,
-              title: facility.name,
-              buildingId: buildingConfig.buildingId,
-              owner: facility.location,
-              status: facility.status,
-              meta: `${facility.availability} · ${facility.visibility}`
-            }))} />
-          </Panel>
-          <div className="grid gap-4">
+        <Panel title="Booking requests">
+          <div className="divide-y divide-line">
             {records.length ? records.map((booking) => (
-              <article className="rounded-3xl border border-line bg-white p-5 shadow-soft" key={booking.id}>
-                <Badge label={booking.status} />
-                <h3 className="mt-3 font-semibold">{booking.title}</h3>
-                <p className="mt-1 text-sm text-slate-500">{buildingName(booking.buildingId)} · {booking.owner}</p>
-                <p className="mt-3 text-sm text-slate-600">{booking.meta}</p>
-                <div className="mt-4 flex flex-wrap gap-2">
-                  <button className="btn-secondary" onClick={() => actions.updateFacilityBooking(booking.id, 'Approved')}>Approve</button>
-                  <button className="btn-secondary" onClick={() => actions.updateFacilityBooking(booking.id, 'Closed')}>Decline</button>
+              <article className="flex flex-col gap-4 py-4 sm:flex-row sm:items-center sm:justify-between" key={booking.id}>
+                <div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="font-semibold">{booking.title}</h3>
+                    <Badge label={booking.status} />
+                  </div>
+                  <p className="mt-1 text-sm text-slate-500">{booking.owner} · {formatDate(booking.due)}</p>
+                  <p className="mt-2 text-sm text-slate-600">{booking.meta}</p>
                 </div>
+                {['Submitted', 'Pending', 'Requested'].includes(booking.status) && (
+                  <div className="flex shrink-0 flex-wrap gap-2">
+                    <button className="btn-secondary" onClick={() => actions.updateFacilityBooking(booking.id, 'Approved')}>Approve</button>
+                    <button className="btn-secondary" onClick={() => actions.updateFacilityBooking(booking.id, 'Rejected')}>Reject</button>
+                  </div>
+                )}
               </article>
             )) : <EmptyState title="No booking requests" copy="Resident BBQ Area requests will appear here for approval." />}
           </div>
-        </div>
+        </Panel>
       )}
     </div>
   );
@@ -1932,7 +2333,6 @@ function MotionsPage({ role, data, actions }: { role: Role; data: MvpData; actio
             <p className="mt-1 text-sm text-slate-500">{buildingName(motion.buildingId)} · {motion.meta}</p>
             <div className="mt-4 flex flex-wrap gap-2">
               <button className="btn-secondary" onClick={() => actions.openForm('voteMotion', { id: motion.id, title: motion.title })}>Vote</button>
-              <ComingSoonButton label="Abstain" />
             </div>
           </article>
         ))}
@@ -1981,33 +2381,26 @@ function ReportsPage({ role, data }: { role: Role; data: MvpData }) {
   return <ModulePage title="Reports" eyebrow={rolePermissions[role].scope} records={recordsByRole[role]} cta="Export report" />;
 }
 
-function NoticeCard({ notice }: { notice: Notice }) {
+function NoticeCard({ notice, role }: { notice: Notice; role: Role }) {
   return (
     <article className="rounded-3xl border border-line bg-white p-5">
       <div className="flex items-center justify-between gap-3">
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Badge label={notice.priority} tone={notice.priority} />
-          <span className={`pill ${isNewRecord(notice) ? 'bg-blue-50 text-blue-700 ring-blue-200' : 'bg-slate-100 text-slate-600 ring-slate-200'}`}>{isNewRecord(notice) ? 'New' : 'Demo'}</span>
+          {notice.publicationStatus === 'Draft' && <Badge label="Draft" />}
         </div>
-        <span className="text-xs text-slate-500">{notice.reads} reads</span>
+        <span className="text-xs text-slate-500">
+          {notice.publicationStatus === 'Draft'
+            ? 'Not visible to residents'
+            : (role === 'manager' || role === 'portfolio_admin' || role === 'super_admin')
+              ? `${notice.reads} read receipt${notice.reads === 1 ? '' : 's'}`
+              : formatDate(notice.publishAt)}
+        </span>
       </div>
       <h2 className="mt-4 text-lg font-semibold">{notice.title}</h2>
       <p className="mt-2 text-sm text-slate-500">{buildingName(notice.buildingId)} · {notice.audience}</p>
       <p className="mt-4 text-sm leading-6 text-slate-600">{notice.body}</p>
-      <div className="mt-4 flex flex-wrap gap-2">
-        {notice.channels.map((channel) => <span className="chip" key={channel}>{channel}</span>)}
-      </div>
     </article>
-  );
-}
-
-function NotificationRules() {
-  return (
-    <div className="hidden gap-2 xl:flex">
-      {(['Low', 'Medium', 'High', 'Emergency'] as Priority[]).map((priority) => (
-        <span className="chip" key={priority}>{priority}: {notificationChannels(priority).join(' + ')}</span>
-      ))}
-    </div>
   );
 }
 
@@ -2051,7 +2444,7 @@ function WorkflowModal({
       <form className="max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-3xl border border-line bg-white p-6 shadow-2xl" onSubmit={submit}>
         <div className="flex items-start justify-between gap-4">
           <div>
-            <p className="text-sm font-semibold uppercase tracking-wide text-harbour">Testing workflow</p>
+            <p className="text-sm font-semibold uppercase tracking-wide text-harbour">Atlas workflow</p>
             <h2 className="mt-2 text-2xl font-semibold">{config.title}</h2>
             <p className="mt-2 text-sm text-slate-500">{config.copy}</p>
           </div>
@@ -2152,15 +2545,16 @@ function formConfig(kind: FormKind, role: Role, context: FormContext | undefined
     },
     createNotice: {
       title: 'Create notice',
-      copy: 'Creates a notice that appears immediately in the resident Communications Hub.',
-      submitLabel: 'Create notice',
-      defaults: { building: buildingOptions[0] ?? buildingConfig.profile.name, title: 'Lift maintenance update', category: 'Maintenance update', priority: 'Medium', audience: 'All residents', body: '' },
+      copy: 'Publish now for residents, or save the notice as a draft for later.',
+      submitLabel: 'Save notice',
+      defaults: { building: buildingOptions[0] ?? buildingConfig.profile.name, title: 'Lift maintenance update', category: 'Maintenance update', priority: 'Medium', audience: 'All residents', publicationStatus: 'Published', body: '' },
       fields: [
         { name: 'building', label: 'Building', options: buildingOptions, required: true },
         { name: 'title', label: 'Notice title', required: true },
         { name: 'category', label: 'Category', options: ['Announcement', 'Maintenance update', 'Water shutdown', 'Lift outage', 'Emergency alert'], required: true },
         { name: 'priority', label: 'Priority', options: ['Low', 'Medium', 'High', 'Emergency'], required: true },
         { name: 'audience', label: 'Audience', options: ['All residents', 'Owners only', 'Tenants only', 'Committee only'], required: true },
+        { name: 'publicationStatus', label: 'Publication', options: ['Published', 'Draft'], required: true },
         { name: 'body', label: 'Notice body', type: 'textarea', required: true }
       ]
     },
@@ -2168,13 +2562,13 @@ function formConfig(kind: FormKind, role: Role, context: FormContext | undefined
       title: 'Upload document',
       copy: 'Uploads a file to Supabase Storage and creates a document record visible by permission.',
       submitLabel: 'Upload document',
-      defaults: { building: buildingOptions[0] ?? buildingConfig.profile.name, title: 'Building update document', category: 'Building documents', visibility: 'Visible', url: '' },
+      defaults: { building: buildingOptions[0] ?? buildingConfig.profile.name, title: 'Building update document', category: 'Building documents', visibility: 'All residents', url: '' },
       fields: [
         { name: 'building', label: 'Building', options: buildingOptions, required: true },
         { name: 'file', label: 'File', type: 'file', required: true },
         { name: 'title', label: 'Document title', required: true },
         { name: 'category', label: 'Category', options: ['By-laws', 'Minutes', 'Levy notices', 'Insurance', 'Building documents'], required: true },
-        { name: 'visibility', label: 'Visibility', options: ['Visible', 'Committee only'], required: true },
+        { name: 'visibility', label: 'Visibility', options: ['All residents', 'Committee only'], required: true },
         { name: 'url', label: 'Fallback URL', required: false }
       ]
     },
@@ -2241,6 +2635,10 @@ function formConfig(kind: FormKind, role: Role, context: FormContext | undefined
 }
 
 function ReportIssueList({ issues, managerView = false, actions }: { issues: ReportIssue[]; managerView?: boolean; actions?: FlowActions }) {
+  if (!issues.length) {
+    return <EmptyState title="No reported issues" copy={managerView ? 'New resident reports will appear here for triage.' : 'Your submitted issues will appear here.'} />;
+  }
+
   return (
     <div className="space-y-3">
       {issues.map((issue) => (
@@ -2248,7 +2646,7 @@ function ReportIssueList({ issues, managerView = false, actions }: { issues: Rep
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex flex-wrap gap-2">
               <Badge label={issue.severity} tone={issue.severity} />
-              <span className={`pill ${isNewRecord(issue) ? 'bg-blue-50 text-blue-700 ring-blue-200' : 'bg-slate-100 text-slate-600 ring-slate-200'}`}>{isNewRecord(issue) ? 'NEW' : 'Seed'}</span>
+              {isNewRecord(issue) && <span className="pill bg-blue-50 text-blue-700 ring-blue-200">NEW</span>}
             </div>
             <Badge label={issue.status} />
           </div>
@@ -2356,6 +2754,10 @@ function ModulePage({ title, eyebrow, records, cta, compact = false }: { title: 
 }
 
 function MaintenanceCards({ requests, contractorView = false, compact = false, onAssignContractor, onContractorUpdate, onStatusUpdate }: { requests: MaintenanceRequest[]; contractorView?: boolean; compact?: boolean; onAssignContractor?: (id?: string) => void; onContractorUpdate?: (id?: string, status?: string) => void; onStatusUpdate?: (id: string, status: string) => void }) {
+  if (!requests.length) {
+    return <EmptyState title="No maintenance requests" copy="New resident issues and assigned jobs will appear here." />;
+  }
+
   return (
     <div className={`grid gap-4 ${compact ? '' : 'lg:grid-cols-2'}`}>
       {requests.map((request) => (
@@ -2363,7 +2765,7 @@ function MaintenanceCards({ requests, contractorView = false, compact = false, o
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex flex-wrap gap-2">
               <Badge label={request.priority} tone={request.priority} />
-              <span className={`pill ${isNewRecord(request) ? 'bg-blue-50 text-blue-700 ring-blue-200' : 'bg-slate-100 text-slate-600 ring-slate-200'}`}>{isNewRecord(request) ? 'NEW' : 'Seed'}</span>
+              {isNewRecord(request) && <span className="pill bg-blue-50 text-blue-700 ring-blue-200">NEW</span>}
             </div>
             <Badge label={request.overdue ? 'Overdue' : request.status} />
           </div>
@@ -2384,23 +2786,24 @@ function MaintenanceCards({ requests, contractorView = false, compact = false, o
               </div>
             </div>
           ) : null}
-          <div className="mt-5 flex flex-wrap gap-2">
-            <button className="btn-secondary" onClick={() => onStatusUpdate?.(request.id, request.status === 'Closed' ? 'Under Review' : request.status)}><Eye size={16} /> Open details</button>
-            {contractorView ? (
+          {(onStatusUpdate || onAssignContractor || onContractorUpdate) && (
+            <div className="mt-5 flex flex-wrap gap-2">
+            {contractorView && onContractorUpdate ? (
               <>
-                <button className="btn-secondary" onClick={() => onContractorUpdate?.(request.id, 'In Progress')}><MessageSquare size={16} /> Add update</button>
-                <button className="btn-secondary" onClick={() => onContractorUpdate?.(request.id, 'In Progress')}>Mark in progress</button>
-                <button className="btn-secondary" onClick={() => onContractorUpdate?.(request.id, 'Completed')}>Mark completed</button>
+                <button className="btn-secondary" onClick={() => onContractorUpdate(request.id, request.status)}><MessageSquare size={16} /> Add update</button>
+                {!['In Progress', 'Completed', 'Closed'].includes(request.status) && <button className="btn-secondary" onClick={() => onContractorUpdate(request.id, 'In Progress')}>Mark in progress</button>}
+                {!['Completed', 'Closed'].includes(request.status) && <button className="btn-secondary" onClick={() => onContractorUpdate(request.id, 'Completed')}>Mark completed</button>}
               </>
             ) : (
               <>
-                <button className="btn-secondary" onClick={() => onStatusUpdate?.(request.id, 'Under Review')}>Review</button>
-                <button className="btn-secondary" onClick={() => onAssignContractor?.(request.id)}>Assign contractor</button>
-                <button className="btn-secondary" onClick={() => onStatusUpdate?.(request.id, 'Scheduled')}>Schedule</button>
-                <button className="btn-secondary" onClick={() => onStatusUpdate?.(request.id, 'Closed')}>Close</button>
+                {onStatusUpdate && ['Submitted', 'Triage'].includes(request.status) && <button className="btn-secondary" onClick={() => onStatusUpdate(request.id, 'Under Review')}>Start review</button>}
+                {onAssignContractor && !request.contractorId && !['Completed', 'Closed'].includes(request.status) && <button className="btn-secondary" onClick={() => onAssignContractor(request.id)}>Assign contractor</button>}
+                {onStatusUpdate && request.contractorId && !['Scheduled', 'In Progress', 'Completed', 'Closed'].includes(request.status) && <button className="btn-secondary" onClick={() => onStatusUpdate(request.id, 'Scheduled')}>Schedule</button>}
+                {onStatusUpdate && request.status === 'Completed' && <button className="btn-secondary" onClick={() => onStatusUpdate(request.id, 'Closed')}>Review and close</button>}
               </>
             )}
           </div>
+          )}
         </article>
       ))}
     </div>
@@ -2408,23 +2811,8 @@ function MaintenanceCards({ requests, contractorView = false, compact = false, o
 }
 
 function RecordTable({ records }: { records: SimpleRecord[] }) {
-  const [filter, setFilter] = useState<'All' | 'New Records' | 'Seed Data' | 'My Records'>('All');
-  const filteredRecords = records.filter((record) => {
-    if (filter === 'New Records') return isNewRecord(record);
-    if (filter === 'Seed Data') return !isNewRecord(record);
-    if (filter === 'My Records') return isNewRecord(record) || record.meta?.includes('Created in testing mode') || record.meta?.includes('Uploaded in testing mode');
-    return true;
-  });
-
   return (
     <div>
-      <div className="mb-4 flex flex-wrap gap-2">
-        {(['All', 'New Records', 'Seed Data', 'My Records'] as const).map((option) => (
-          <button key={option} className={`tab-button ${filter === option ? 'tab-button-active' : ''}`} onClick={() => setFilter(option)}>
-            {option}
-          </button>
-        ))}
-      </div>
       <div className="overflow-x-auto">
         <table className="w-full min-w-[760px] text-left text-sm">
           <thead>
@@ -2438,14 +2826,12 @@ function RecordTable({ records }: { records: SimpleRecord[] }) {
             </tr>
           </thead>
           <tbody>
-            {filteredRecords.map((record) => (
+            {records.map((record) => (
               <tr className="border-b border-line last:border-0" key={record.id}>
                 <td className="py-4 pr-4 font-medium">
                   <div className="flex flex-wrap items-center gap-2">
                     <span>{record.title}</span>
-                    <span className={`pill ${isNewRecord(record) ? 'bg-blue-50 text-blue-700 ring-blue-200' : 'bg-slate-100 text-slate-600 ring-slate-200'}`}>
-                      {isNewRecord(record) ? 'NEW' : 'Seed'}
-                    </span>
+                    {isNewRecord(record) && <span className="pill bg-blue-50 text-blue-700 ring-blue-200">NEW</span>}
                   </div>
                 </td>
                 <td className="py-4 pr-4 text-slate-600">{buildingName(record.buildingId)}</td>

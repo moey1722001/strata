@@ -74,6 +74,7 @@ export type Notice = {
   channels: string[];
   reads: number;
   body: string;
+  publicationStatus?: 'Draft' | 'Published';
 };
 
 export type MaintenanceRequest = {
@@ -350,7 +351,7 @@ export const rolePermissions: Record<Role, {
     canManage: ['companies', 'usage metrics', 'system reports']
   },
   portfolio_admin: {
-    scope: 'Atlas Residences sandbox',
+    scope: 'Atlas Residences',
     canSeeBuildings: 'company',
     canSeeFinancials: 'portfolio-summary',
     canManage: ['messages', 'notices', 'documents', 'maintenance', 'facility bookings']
@@ -768,7 +769,7 @@ export const motions: SimpleRecord[] = [
 ];
 
 export const navItems: NavItem[] = [
-  { id: 'portfolio', label: 'Sandbox Dashboard', icon: LayoutDashboard, roles: ['super_admin', 'portfolio_admin'] },
+  { id: 'portfolio', label: 'Dashboard', icon: LayoutDashboard, roles: ['super_admin', 'portfolio_admin'] },
   { id: 'messages', label: 'Messages', icon: MessageSquare, roles: ['super_admin', 'portfolio_admin'] },
   { id: 'communications', label: 'Notices', icon: Bell, roles: ['super_admin', 'portfolio_admin'] },
   { id: 'documents', label: 'Documents', icon: FileText, roles: ['super_admin', 'portfolio_admin'] },
