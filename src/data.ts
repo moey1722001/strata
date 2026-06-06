@@ -240,6 +240,8 @@ export type Contractor = {
   completed: number;
   rating: number;
   serviceAreas: string[];
+  notes?: string;
+  status?: 'Active' | 'Inactive';
 };
 
 export type Project = {

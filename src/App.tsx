@@ -58,19 +58,22 @@ import {
   staff,
   testAccounts
 } from './data';
-import type { BuildingConfiguration, BuildingContact, LevyRecord, MaintenanceRequest, Notice, PageId, Priority, Project, ReportIssue, Role, SimpleRecord, TestAccount } from './data';
+import type { BuildingConfiguration, BuildingContact, Contractor, LevyRecord, MaintenanceRequest, Notice, PageId, Priority, Project, ReportIssue, Role, SimpleRecord, TestAccount } from './data';
 import { AtlasLogo, AtlasMark } from './brand';
 import {
   addContractorUpdate,
+  archiveContractor,
   assignContractorToFirstJob,
   bookFacility,
   createBuilding,
   createNotice,
   createResidentIssue,
+  inviteContractor,
   loadMvpData,
   markMessagesRead,
   publishNotice,
   runSupabaseDiagnostic,
+  saveContractor,
   sendResidentMessage,
   signInTestAccount,
   submitRenovation,
@@ -103,6 +106,13 @@ const statusClasses: Record<string, string> = {
   'Due soon': 'bg-amber-50 text-amber-800 ring-amber-200',
   'In progress': 'bg-blue-50 text-blue-700 ring-blue-200',
   'In Progress': 'bg-blue-50 text-blue-700 ring-blue-200',
+  'New Request': 'bg-blue-50 text-blue-700 ring-blue-200',
+  Assigned: 'bg-indigo-50 text-indigo-700 ring-indigo-200',
+  Accepted: 'bg-violet-50 text-violet-700 ring-violet-200',
+  Complete: 'bg-emerald-50 text-emerald-700 ring-emerald-200',
+  'Resident Notified': 'bg-slate-900 text-white ring-slate-900',
+  Active: 'bg-emerald-50 text-emerald-700 ring-emerald-200',
+  Inactive: 'bg-slate-100 text-slate-700 ring-slate-200',
   'Committee Review': 'bg-purple-50 text-purple-700 ring-purple-200',
   'Manager Review': 'bg-blue-50 text-blue-700 ring-blue-200',
   'More Info Required': 'bg-amber-50 text-amber-800 ring-amber-200',
@@ -115,7 +125,7 @@ type FlowActions = {
   openForm: (kind: FormKind, context?: FormContext) => void;
   createBuilding: (payload: Record<string, string>) => Promise<void>;
   reportIssue: (payload?: Partial<ReportIssue> & { description?: string }) => Promise<void>;
-  assignContractor: (id?: string, payload?: Partial<MaintenanceRequest>) => Promise<void>;
+  assignContractor: (id?: string, contractorId?: string) => Promise<void>;
   updateMaintenanceStatus: (id: string, status: string, note?: string) => Promise<void>;
   updateIssueStatus: (id: string, status: string) => Promise<void>;
   notifyResident: (id: string) => Promise<void>;
@@ -132,6 +142,9 @@ type FlowActions = {
   updateFacilityBooking: (id: string, status: string) => Promise<void>;
   recordIncidentUpdate: (id: string) => Promise<void>;
   saveBuildingConfig: (config: BuildingConfiguration, action: string) => Promise<void>;
+  saveContractor: (payload: Record<string, string>, contractorId?: string) => Promise<void>;
+  archiveContractor: (id: string) => Promise<void>;
+  inviteContractor: (id: string) => Promise<void>;
 };
 
 type FormKind =
@@ -143,6 +156,8 @@ type FormKind =
   | 'bookFacility'
   | 'submitRenovation'
   | 'assignContractor'
+  | 'upsertContractor'
+  | 'inviteContractor'
   | 'updateJobStatus'
   | 'voteMotion';
 
@@ -168,6 +183,7 @@ function App() {
     notices: [],
     reportIssues: [],
     maintenanceRequests: [],
+    contractors,
     contractorUpdates: [],
     messages: [],
     documents: [],
@@ -280,7 +296,7 @@ function App() {
     openForm: (kind: FormKind, context?: FormContext) => setActiveForm({ kind, context }),
     createBuilding: (payload: Record<string, string>) => runAction(() => createBuilding(currentAccount, payload)),
     reportIssue: (payload?: Partial<ReportIssue>) => runAction(() => createResidentIssue(currentAccount, payload)),
-    assignContractor: (id?: string) => runAction(() => assignContractorToFirstJob(currentAccount, id)),
+    assignContractor: (id?: string, contractorId?: string) => runAction(() => assignContractorToFirstJob(currentAccount, id, contractorId)),
     updateMaintenanceStatus: (id: string, status: string, note?: string) => runAction(() => updateMaintenanceRequestStatus(currentAccount, id, status, note)),
     updateIssueStatus: (id: string, status: string) => runAction(() => updateReportIssueStatus(currentAccount, id, status)),
     notifyResident: (id: string) => runAction(() => updateReportIssueStatus(currentAccount, id, 'Under Review')),
@@ -296,7 +312,10 @@ function App() {
     requestRenovationInfo: (id: string) => runAction(() => updateRenovationStatus(currentAccount, id, 'More Info Required', 'Acoustic certificate and contractor insurance requested')),
     updateFacilityBooking: (id: string, status: string) => runAction(() => updateFacilityBooking(currentAccount, id, status)),
     recordIncidentUpdate: (_id: string) => runAction(() => Promise.resolve({ ok: false, message: 'Incident persistence is not part of this Supabase pass yet.' })),
-    saveBuildingConfig: (config: BuildingConfiguration, action: string) => runAction(() => updateBuildingConfiguration(currentAccount, config, action))
+    saveBuildingConfig: (config: BuildingConfiguration, action: string) => runAction(() => updateBuildingConfiguration(currentAccount, config, action)),
+    saveContractor: (payload: Record<string, string>, contractorId?: string) => runAction(() => saveContractor(currentAccount, payload, contractorId)),
+    archiveContractor: (id: string) => runAction(() => archiveContractor(currentAccount, id)),
+    inviteContractor: (id: string) => runAction(() => inviteContractor(currentAccount, id))
   };
 
   async function submitWorkflowForm(payload: Record<string, string | File>, context?: FormContext) {
@@ -335,7 +354,19 @@ function App() {
       await flowActions.submitRenovation({ title: field('title'), due: field('date'), meta: field('scope') });
     }
     if (activeForm.kind === 'assignContractor') {
-      await flowActions.assignContractor(targetId);
+      const contractor = dataContractorByName(mvpData.contractors, field('contractor'));
+      if (!contractor || contractor.status === 'Inactive') {
+        setActionStatus('Add or reactivate a contractor before assigning this request.');
+        setActiveForm(null);
+        return;
+      }
+      await flowActions.assignContractor(targetId, contractor.id);
+    }
+    if (activeForm.kind === 'upsertContractor') {
+      await flowActions.saveContractor(stringPayload(payload), targetId);
+    }
+    if (activeForm.kind === 'inviteContractor' && targetId) {
+      await flowActions.inviteContractor(targetId);
     }
     if (activeForm.kind === 'updateJobStatus' && targetId) {
       if (role === 'contractor') {
@@ -1230,6 +1261,7 @@ function ContractorDashboard({ role, data, actions }: { role: Role; data: MvpDat
       </div>
       <MaintenanceCards
         requests={assigned}
+        contractors={data.contractors}
         contractorView
         onContractorUpdate={(id, status) => actions.openForm('updateJobStatus', { id, status, title: assigned.find((request) => request.id === id)?.title })}
         onStatusUpdate={(id, status) => actions.openForm('updateJobStatus', { id, status, title: assigned.find((request) => request.id === id)?.title })}
@@ -1557,9 +1589,10 @@ function MaintenancePage({ role, data, actions }: { role: Role; data: MvpData; a
     const assigned = filterForRole(data.maintenanceRequests, 'contractor');
     return (
       <div className="space-y-6">
-        <SectionHeader eyebrow="Assigned Jobs" title="LiftCare NSW work queue" />
+        <SectionHeader eyebrow="Assigned jobs" title="Your Atlas work queue" />
         <MaintenanceCards
           requests={assigned}
+          contractors={data.contractors}
           contractorView
           onContractorUpdate={(id, status) => actions.openForm('updateJobStatus', { id, status, title: assigned.find((request) => request.id === id)?.title })}
           onStatusUpdate={(id, status) => actions.openForm('updateJobStatus', { id, status, title: assigned.find((request) => request.id === id)?.title })}
@@ -1570,20 +1603,18 @@ function MaintenancePage({ role, data, actions }: { role: Role; data: MvpData; a
 
   return (
     <div className="space-y-6">
-      <SectionHeader eyebrow="Maintenance" title="Issue triage and contractor assignment" />
-      <div className="grid gap-5 xl:grid-cols-[0.9fr_1.1fr]">
-        <Panel title="Resident issues to triage">
-          <ReportIssueList issues={data.reportIssues} managerView actions={actions} />
-        </Panel>
-        <Panel title="Maintenance jobs">
-          <MaintenanceCards
-            requests={data.maintenanceRequests}
-            compact
-            onAssignContractor={(id) => actions.openForm('assignContractor', { id, title: data.maintenanceRequests.find((request) => request.id === id)?.title })}
-            onStatusUpdate={(id, status) => actions.openForm('updateJobStatus', { id, status, title: data.maintenanceRequests.find((request) => request.id === id)?.title })}
-          />
-        </Panel>
-      </div>
+      <SectionHeader eyebrow="Maintenance" title="Requests needing the next action" />
+      <MaintenanceWorkflowSummary requests={data.maintenanceRequests} />
+      <Panel title="Work queue">
+        <MaintenanceCards
+          requests={data.maintenanceRequests}
+          contractors={data.contractors}
+          compact
+          onAssignContractor={(id) => actions.openForm('assignContractor', { id, title: data.maintenanceRequests.find((request) => request.id === id)?.title })}
+          onStatusUpdate={(id, status) => actions.openForm('updateJobStatus', { id, status, title: data.maintenanceRequests.find((request) => request.id === id)?.title })}
+        />
+      </Panel>
+      <ContractorManagementPanel data={data} actions={actions} />
     </div>
   );
 }
@@ -2547,6 +2578,9 @@ function formConfig(kind: FormKind, role: Role, context: FormContext | undefined
   const facilityOptions = activeFacilities(buildingConfig).map((facility) => facility.name);
   const renovationOptions = activeRenovationRules(buildingConfig).map((rule) => rule.type);
   const buildingOptions = (data.buildings.length ? data.buildings : buildings).map((building) => building.name);
+  const activeContractors = data.contractors.filter((contractor) => contractor.status !== 'Inactive');
+  const contractorOptions = activeContractors.length ? activeContractors.map((contractor) => contractor.company) : ['No active contractors'];
+  const editingContractor = data.contractors.find((contractor) => contractor.id === context?.id);
   const configs: Record<FormKind, { title: string; copy: string; submitLabel: string; defaults: Record<string, string>; fields: FormField[] }> = {
     addBuilding: {
       title: 'Add building',
@@ -2653,18 +2687,48 @@ function formConfig(kind: FormKind, role: Role, context: FormContext | undefined
     },
     assignContractor: {
       title: 'Assign contractor',
-      copy: `Assigns LiftCare NSW to ${recordTitle} and makes the job visible in the contractor portal.`,
+      copy: `Choose the contractor responsible for ${recordTitle}. This creates the work order and makes it visible in the contractor portal.`,
       submitLabel: 'Assign contractor',
-      defaults: { contractor: 'LiftCare NSW', note: '' },
-      fields: [{ name: 'contractor', label: 'Contractor', options: ['LiftCare NSW'], required: true }, { name: 'note', label: 'Assignment note', type: 'textarea' }]
+      defaults: { contractor: contractorOptions[0], note: '' },
+      fields: [{ name: 'contractor', label: 'Contractor', options: contractorOptions, required: true }, { name: 'note', label: 'Assignment note', type: 'textarea' }]
+    },
+    upsertContractor: {
+      title: editingContractor ? 'Edit contractor' : 'Add contractor',
+      copy: 'Keep contractor contact details clean so managers can assign work without searching emails or spreadsheets.',
+      submitLabel: editingContractor ? 'Save contractor' : 'Add contractor',
+      defaults: {
+        company: editingContractor?.company ?? '',
+        contact: editingContractor?.contact ?? '',
+        email: editingContractor?.email ?? '',
+        phone: editingContractor?.phone ?? '',
+        trade: editingContractor?.trade ?? '',
+        status: editingContractor?.status ?? 'Active',
+        notes: editingContractor?.notes ?? ''
+      },
+      fields: [
+        { name: 'company', label: 'Business name', required: true },
+        { name: 'contact', label: 'Contact person', required: true },
+        { name: 'email', label: 'Email', required: true },
+        { name: 'phone', label: 'Mobile', required: true },
+        { name: 'trade', label: 'Trade category', required: true },
+        { name: 'status', label: 'Status', options: ['Active', 'Inactive'], required: true },
+        { name: 'notes', label: 'Notes', type: 'textarea' }
+      ]
+    },
+    inviteContractor: {
+      title: 'Invite contractor',
+      copy: `Send ${recordTitle} a Resend email invitation with the Atlas link and access instructions for assigned jobs.`,
+      submitLabel: 'Send invitation',
+      defaults: { confirm: 'Send invitation email' },
+      fields: [{ name: 'confirm', label: 'Confirmation', options: ['Send invitation email'], required: true }]
     },
     updateJobStatus: {
       title: 'Update job status',
       copy: `Updates ${recordTitle} and posts a visible progress message.`,
       submitLabel: 'Save update',
-      defaults: { status: context?.status ?? 'In Progress', note: '' },
+      defaults: { status: context?.status ?? 'In Progress', note: defaultMaintenanceNote(context?.status) },
       fields: [
-        { name: 'status', label: 'Status', options: ['Under Review', 'Assigned', 'Scheduled', 'In Progress', 'Completed', 'Closed'], required: true },
+        { name: 'status', label: 'Status', options: ['Accepted', 'In Progress', 'Complete', 'Resident Notified'], required: true },
         { name: 'note', label: 'Progress note', type: 'textarea', required: true }
       ]
     },
@@ -2766,60 +2830,248 @@ function ModulePage({ title, eyebrow, records, cta, compact = false }: { title: 
   );
 }
 
-function MaintenanceCards({ requests, contractorView = false, compact = false, onAssignContractor, onContractorUpdate, onStatusUpdate }: { requests: MaintenanceRequest[]; contractorView?: boolean; compact?: boolean; onAssignContractor?: (id?: string) => void; onContractorUpdate?: (id?: string, status?: string) => void; onStatusUpdate?: (id: string, status: string) => void }) {
+function MaintenanceCards({
+  requests,
+  contractors: contractorRoster,
+  contractorView = false,
+  compact = false,
+  onAssignContractor,
+  onContractorUpdate,
+  onStatusUpdate
+}: {
+  requests: MaintenanceRequest[];
+  contractors?: Contractor[];
+  contractorView?: boolean;
+  compact?: boolean;
+  onAssignContractor?: (id?: string) => void;
+  onContractorUpdate?: (id?: string, status?: string) => void;
+  onStatusUpdate?: (id: string, status: string) => void;
+}) {
   if (!requests.length) {
     return <EmptyState title="No maintenance requests" copy="New resident issues and assigned jobs will appear here." />;
   }
 
   return (
     <div className={`grid gap-4 ${compact ? '' : 'lg:grid-cols-2'}`}>
-      {requests.map((request) => (
-        <article className="rounded-3xl border border-line bg-white p-5 shadow-soft" key={request.id}>
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex flex-wrap gap-2">
-              <Badge label={request.priority} tone={request.priority} />
-              {isNewRecord(request) && <span className="pill bg-blue-50 text-blue-700 ring-blue-200">NEW</span>}
-            </div>
-            <Badge label={request.overdue ? 'Overdue' : request.status} />
-          </div>
-          <h2 className="mt-4 text-lg font-semibold">{request.title}</h2>
-          <p className="mt-1 text-sm text-slate-500">{buildingName(request.buildingId)} · Lot {request.unit} · {request.category}</p>
-          <div className="mt-5 grid gap-3 sm:grid-cols-3">
-            <MiniStat label={contractorView ? 'Contact' : 'Resident'} value={request.resident} />
-            <MiniStat label="SLA" value={`${request.slaHours}h`} />
-            <MiniStat label="Access" value={request.access.includes('Permission') ? 'Permitted' : 'By appointment'} />
-          </div>
-          {request.timeline?.length ? (
-            <div className="mt-5 rounded-2xl bg-slate-50 p-4">
-              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Timeline</p>
-              <div className="mt-3 space-y-2">
-                {request.timeline.map((item) => (
-                  <p className="text-sm text-slate-600" key={item}>{item}</p>
-                ))}
+      {requests.map((request) => {
+        const nextStep = contractorView
+          ? contractorNextStep(request, onContractorUpdate)
+          : managerMaintenanceNextStep(request, onAssignContractor, onStatusUpdate);
+        const assignedContractor = contractorRoster?.find((contractor) => contractor.id === request.contractorId);
+        return (
+          <article className="rounded-3xl border border-line bg-white p-5 shadow-soft" key={request.id}>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex flex-wrap gap-2">
+                <Badge label={request.priority} tone={request.priority} />
+                {isNewRecord(request) && <span className="pill bg-blue-50 text-blue-700 ring-blue-200">NEW</span>}
               </div>
+              <Badge label={request.overdue ? 'Overdue' : maintenanceWorkflowLabel(request)} />
             </div>
-          ) : null}
-          {(onStatusUpdate || onAssignContractor || onContractorUpdate) && (
-            <div className="mt-5 flex flex-wrap gap-2">
-            {contractorView && onContractorUpdate ? (
-              <>
-                <button className="btn-secondary" onClick={() => onContractorUpdate(request.id, request.status)}><MessageSquare size={16} /> Add update</button>
-                {!['In Progress', 'Completed', 'Closed'].includes(request.status) && <button className="btn-secondary" onClick={() => onContractorUpdate(request.id, 'In Progress')}>Mark in progress</button>}
-                {!['Completed', 'Closed'].includes(request.status) && <button className="btn-secondary" onClick={() => onContractorUpdate(request.id, 'Completed')}>Mark completed</button>}
-              </>
-            ) : (
-              <>
-                {onStatusUpdate && ['Submitted', 'Triage'].includes(request.status) && <button className="btn-secondary" onClick={() => onStatusUpdate(request.id, 'Under Review')}>Start review</button>}
-                {onAssignContractor && !request.contractorId && !['Completed', 'Closed'].includes(request.status) && <button className="btn-secondary" onClick={() => onAssignContractor(request.id)}>Assign contractor</button>}
-                {onStatusUpdate && request.contractorId && !['Scheduled', 'In Progress', 'Completed', 'Closed'].includes(request.status) && <button className="btn-secondary" onClick={() => onStatusUpdate(request.id, 'Scheduled')}>Schedule</button>}
-                {onStatusUpdate && request.status === 'Completed' && <button className="btn-secondary" onClick={() => onStatusUpdate(request.id, 'Closed')}>Review and close</button>}
-              </>
-            )}
-          </div>
-          )}
+            <h2 className="mt-4 text-lg font-semibold">{request.title}</h2>
+            <p className="mt-1 text-sm text-slate-500">{buildingName(request.buildingId)} · Lot {request.unit} · {request.category}</p>
+            <div className="mt-5 grid gap-3 sm:grid-cols-3">
+              <MiniStat label={contractorView ? 'Resident' : 'Resident'} value={request.resident} />
+              <MiniStat label="Contractor" value={assignedContractor?.company ?? (request.contractorId ? 'Assigned' : 'Unassigned')} />
+              <MiniStat label="Access" value={request.access.includes('Permission') ? 'Permitted' : 'By appointment'} />
+            </div>
+            <div className="mt-5 rounded-2xl border border-line bg-slate-50 p-4">
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Next step</p>
+              <h3 className="mt-2 font-semibold">{nextStep.title}</h3>
+              <p className="mt-1 text-sm leading-6 text-slate-600">{nextStep.copy}</p>
+              {nextStep.action ? (
+                <button className="btn-primary mt-4" onClick={nextStep.action}>{nextStep.label}</button>
+              ) : (
+                <span className="mt-4 inline-flex rounded-full bg-white px-3 py-2 text-sm font-semibold text-slate-600 ring-1 ring-line">{nextStep.label}</span>
+              )}
+            </div>
+            {request.timeline?.length ? (
+              <div className="mt-5 rounded-2xl bg-white p-4 ring-1 ring-line">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Timeline visible to resident</p>
+                <div className="mt-3 space-y-2">
+                  {request.timeline.slice(-5).map((item) => (
+                    <p className="text-sm text-slate-600" key={item}>{item}</p>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+          </article>
+        );
+      })}
+    </div>
+  );
+}
+
+type MaintenanceNextStep = {
+  title: string;
+  copy: string;
+  label: string;
+  action?: () => void;
+};
+
+function normalizedMaintenanceStatus(request: MaintenanceRequest) {
+  if (!request.contractorId && ['Submitted', 'Triage', 'Under Review', 'Open'].includes(request.status)) return 'New Request';
+  if (request.status === 'Scheduled') return 'Assigned';
+  if (request.status === 'Completed') return 'Complete';
+  return request.status;
+}
+
+function maintenanceWorkflowLabel(request: MaintenanceRequest) {
+  return normalizedMaintenanceStatus(request);
+}
+
+function managerMaintenanceNextStep(
+  request: MaintenanceRequest,
+  onAssignContractor?: (id?: string) => void,
+  onStatusUpdate?: (id: string, status: string) => void
+): MaintenanceNextStep {
+  const status = normalizedMaintenanceStatus(request);
+  if (status === 'New Request') {
+    return {
+      title: 'Assign a contractor',
+      copy: 'This request is waiting for a responsible contractor. Assigning one makes the job visible in the contractor portal and updates the resident timeline.',
+      label: 'Assign Contractor',
+      action: onAssignContractor ? () => onAssignContractor(request.id) : undefined
+    };
+  }
+  if (status === 'Assigned') {
+    return {
+      title: 'Waiting for contractor',
+      copy: 'The contractor has the job. Atlas will show their acceptance or progress update here when they respond.',
+      label: 'Waiting for Contractor'
+    };
+  }
+  if (status === 'Accepted') {
+    return {
+      title: 'Start the job',
+      copy: 'The contractor accepted the job. Mark it in progress so the resident can see work has started.',
+      label: 'Mark In Progress',
+      action: onStatusUpdate ? () => onStatusUpdate(request.id, 'In Progress') : undefined
+    };
+  }
+  if (status === 'In Progress') {
+    return {
+      title: 'Work underway',
+      copy: 'The job is underway. The next contractor update should confirm completion or add progress notes.',
+      label: 'Waiting for Completion'
+    };
+  }
+  if (status === 'Complete') {
+    return {
+      title: 'Notify the resident',
+      copy: 'The contractor marked the work complete. Notify the resident and close the loop.',
+      label: 'Notify Resident',
+      action: onStatusUpdate ? () => onStatusUpdate(request.id, 'Resident Notified') : undefined
+    };
+  }
+  if (status === 'Resident Notified' || status === 'Closed') {
+    return {
+      title: 'Resident notified',
+      copy: 'The resident has been updated and the request is complete.',
+      label: 'Complete'
+    };
+  }
+  return {
+    title: 'Review request',
+    copy: 'Open the request and confirm the next operational step.',
+    label: 'Review'
+  };
+}
+
+function contractorNextStep(request: MaintenanceRequest, onContractorUpdate?: (id?: string, status?: string) => void): MaintenanceNextStep {
+  const status = normalizedMaintenanceStatus(request);
+  if (status === 'Assigned') {
+    return {
+      title: 'Accept the job',
+      copy: 'Confirm you can attend. The strata manager and resident will see that the request has been acknowledged.',
+      label: 'Accept Job',
+      action: onContractorUpdate ? () => onContractorUpdate(request.id, 'Accepted') : undefined
+    };
+  }
+  if (status === 'Accepted') {
+    return {
+      title: 'Ready to start',
+      copy: 'Move the job into progress when attendance or works have started.',
+      label: 'Mark In Progress',
+      action: onContractorUpdate ? () => onContractorUpdate(request.id, 'In Progress') : undefined
+    };
+  }
+  if (status === 'In Progress') {
+    return {
+      title: 'Complete the job',
+      copy: 'Mark complete once works are finished so the strata manager can notify the resident.',
+      label: 'Mark Complete',
+      action: onContractorUpdate ? () => onContractorUpdate(request.id, 'Complete') : undefined
+    };
+  }
+  if (status === 'Complete' || status === 'Resident Notified' || status === 'Closed') {
+    return {
+      title: 'Work complete',
+      copy: 'The job has been completed. The strata manager will handle resident close-out.',
+      label: 'Complete'
+    };
+  }
+  return {
+    title: 'Awaiting assignment',
+    copy: 'This request is not ready for contractor action yet.',
+    label: 'Waiting'
+  };
+}
+
+function MaintenanceWorkflowSummary({ requests }: { requests: MaintenanceRequest[] }) {
+  const steps = ['New Request', 'Assigned', 'Accepted', 'In Progress', 'Complete', 'Resident Notified'];
+  return (
+    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
+      {steps.map((step) => (
+        <article className="rounded-2xl border border-line bg-white p-4 shadow-soft" key={step}>
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">{step}</p>
+          <p className="mt-2 text-2xl font-semibold">{requests.filter((request) => normalizedMaintenanceStatus(request) === step).length}</p>
         </article>
       ))}
     </div>
+  );
+}
+
+function ContractorManagementPanel({ data, actions }: { data: MvpData; actions: FlowActions }) {
+  const activeContractors = data.contractors.filter((contractor) => contractor.status !== 'Inactive');
+  return (
+    <Panel
+      title="Contractors"
+      action={<button className="btn-primary" onClick={() => actions.openForm('upsertContractor')}><Plus size={17} /> Add contractor</button>}
+    >
+      {data.contractors.length ? (
+        <div className="grid gap-4 lg:grid-cols-2">
+          {data.contractors.map((contractor) => {
+            const contractorJobs = data.maintenanceRequests.filter((request) => request.contractorId === contractor.id);
+            return (
+              <article className="rounded-2xl border border-line p-4" key={contractor.id}>
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <h3 className="font-semibold">{contractor.company}</h3>
+                    <p className="mt-1 text-sm text-slate-500">{contractor.trade} · {contractor.contact}</p>
+                  </div>
+                  <Badge label={contractor.status ?? 'Active'} />
+                </div>
+                <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                  <MiniStat label="Email" value={contractor.email} />
+                  <MiniStat label="Mobile" value={contractor.phone || 'Not set'} />
+                  <MiniStat label="Open jobs" value={contractorJobs.filter((job) => !['Complete', 'Completed', 'Closed', 'Resident Notified'].includes(normalizedMaintenanceStatus(job))).length.toString()} />
+                  <MiniStat label="Completed" value={contractorJobs.filter((job) => ['Complete', 'Completed', 'Closed', 'Resident Notified'].includes(normalizedMaintenanceStatus(job))).length.toString()} />
+                </div>
+                {contractor.notes && <p className="mt-3 text-sm leading-6 text-slate-600">{contractor.notes}</p>}
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <button className="btn-secondary" onClick={() => actions.openForm('upsertContractor', { id: contractor.id, title: contractor.company })}>Edit</button>
+                  <button className="btn-secondary" onClick={() => actions.openForm('inviteContractor', { id: contractor.id, title: contractor.company })}>Invite Contractor</button>
+                  {contractor.status !== 'Inactive' && <button className="btn-secondary" onClick={() => actions.archiveContractor(contractor.id)}>Archive</button>}
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      ) : (
+        <EmptyState title="No contractors yet" copy="Add the first contractor before assigning resident maintenance requests." />
+      )}
+      {!activeContractors.length && data.contractors.length > 0 && <p className="mt-4 text-sm text-amber-700">All contractors are inactive. Add or reactivate a contractor before assigning jobs.</p>}
+    </Panel>
   );
 }
 
@@ -2974,6 +3226,18 @@ function enabledIssueCategories(config: BuildingConfiguration) {
 
 function activeRenovationRules(config: BuildingConfiguration) {
   return config.renovationRules.filter((rule) => rule.enabled);
+}
+
+function dataContractorByName(contractorList: Contractor[], name: string) {
+  return contractorList.find((contractor) => contractor.company === name);
+}
+
+function defaultMaintenanceNote(status?: string) {
+  if (status === 'Accepted') return 'Contractor accepted the job and will coordinate attendance.';
+  if (status === 'In Progress') return 'Work has started and the resident timeline has been updated.';
+  if (status === 'Complete') return 'Contractor marked the work complete.';
+  if (status === 'Resident Notified') return 'Resident notified that the request has been completed.';
+  return '';
 }
 
 function visibleContacts(config: BuildingConfiguration, role: Role) {

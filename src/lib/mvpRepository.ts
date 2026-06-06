@@ -1,6 +1,6 @@
 import { supabase, isSupabaseConfigured, supabaseEnvStatus } from './supabase';
-import { auditLogs, buildingConfigurations, company, incidents, packages, testAccounts } from '../data';
-import type { Building, BuildingConfiguration, MaintenanceRequest, Notice, Priority, ReportIssue, Role, SimpleRecord, TestAccount } from '../data';
+import { auditLogs, buildingConfigurations, company, contractors, incidents, packages, testAccounts } from '../data';
+import type { Building, BuildingConfiguration, Contractor, MaintenanceRequest, Notice, Priority, ReportIssue, Role, SimpleRecord, TestAccount } from '../data';
 
 const SANDBOX_BUILDING_ID = '00000000-0000-4000-8000-000000000101';
 const DOCUMENTS_BUCKET = 'atlas-documents';
@@ -10,6 +10,7 @@ export type MvpData = {
   notices: Notice[];
   reportIssues: ReportIssue[];
   maintenanceRequests: MaintenanceRequest[];
+  contractors: Contractor[];
   contractorUpdates: SimpleRecord[];
   messages: SimpleRecord[];
   documents: SimpleRecord[];
@@ -32,6 +33,7 @@ const emptyData: MvpData = {
   notices: [],
   reportIssues: [],
   maintenanceRequests: [],
+  contractors,
   contractorUpdates: [],
   messages: [],
   documents: [],
@@ -113,6 +115,7 @@ export async function loadMvpData(account: TestAccount | null, role: Role): Prom
     noticeRows,
     issueRows,
     maintenanceRows,
+    contractorRows,
     workOrderRows,
     messageRows,
     documentRows,
@@ -129,6 +132,7 @@ export async function loadMvpData(account: TestAccount | null, role: Role): Prom
     supabase.from('notices').select('*').in('building_id', buildingFilter).order('created_at', { ascending: false }),
     supabase.from('report_issues').select('*, lots(unit_number), users(full_name)').in('building_id', buildingFilter).order('created_at', { ascending: false }),
     supabase.from('maintenance_requests').select('*, lots(unit_number), users(full_name)').in('building_id', buildingFilter).order('created_at', { ascending: false }),
+    supabase.from('contractors').select('*').eq('company_id', companyId).order('created_at', { ascending: false }),
     supabase.from('work_orders').select('*').in('building_id', buildingFilter).order('created_at', { ascending: false }),
     hasBuildingScope
       ? supabase.from('messages').select('*, sender:users!messages_sender_id_fkey(full_name), recipient:users!messages_recipient_id_fkey(full_name)').or(`building_id.in.(${allowedBuildingIds.join(',')}),recipient_id.eq.${user.id},sender_id.eq.${user.id}`).order('created_at', { ascending: false })
@@ -159,6 +163,7 @@ export async function loadMvpData(account: TestAccount | null, role: Role): Prom
     buildings: (buildingRows.data ?? []).map(mapBuilding),
     notices: noticeData.map(mapNotice),
     reportIssues: (issueRows.data ?? []).map(mapIssue),
+    contractors: (contractorRows.data ?? []).map(mapContractor),
     maintenanceRequests: (maintenanceRows.data ?? []).map((row) => {
       const workOrder = workOrders.find((item) => item.maintenance_request_id === row.id);
       return mapMaintenance(
@@ -197,6 +202,7 @@ async function loadContractorMvpData(account: TestAccount, userId: string): Prom
 
   return {
     ...emptyData,
+    contractors,
     maintenanceRequests: (workOrders.data ?? []).map((row) => mapMaintenance({
       ...(row.maintenance_requests ?? {}),
       contractor_id: row.contractor_id,
@@ -409,13 +415,16 @@ export async function createResidentIssue(account: TestAccount | null, payload?:
   return { ok: true, message: 'Issue saved in Supabase.' };
 }
 
-export async function assignContractorToFirstJob(account: TestAccount | null, maintenanceRequestId?: string): Promise<MvpActionResult> {
+export async function assignContractorToFirstJob(account: TestAccount | null, maintenanceRequestId?: string, contractorId = 'c3'): Promise<MvpActionResult> {
   const context = await requireUserContext(account);
   if (!context.ok) return context;
   const { user } = context;
   const buildingIds = await getAllowedBuildingIds(user.id, 'manager');
-  const contractor = await supabase!.from('contractors').select('id, company_id').eq('email', 'contractor@liftcare.com.au').maybeSingle();
-  if (!contractor.data) return { ok: false, message: 'LiftCare NSW contractor not found.' };
+  const requestedContractorId = databaseContractorId(contractorId);
+  const contractor = requestedContractorId
+    ? await supabase!.from('contractors').select('id, company_id, company_name').eq('id', requestedContractorId).maybeSingle()
+    : await supabase!.from('contractors').select('id, company_id, company_name').eq('email', 'contractor@liftcare.com.au').maybeSingle();
+  if (!contractor.data) return { ok: false, message: 'Selected contractor was not found.' };
 
   const resolvedMaintenanceId = maintenanceRequestId ? await resolveMaintenanceRequestId(maintenanceRequestId) : null;
   const jobQuery = supabase!.from('maintenance_requests').select('*').in('building_id', buildingIds);
@@ -429,14 +438,16 @@ export async function assignContractorToFirstJob(account: TestAccount | null, ma
     building_id: job.data.building_id,
     maintenance_request_id: job.data.id,
     contractor_id: contractor.data.id,
-    status: 'Assigned'
+    status: 'Assigned',
+    internal_notes: 'Assigned through Atlas maintenance workflow.'
   }, { onConflict: 'maintenance_request_id,contractor_id' }).select('id').single();
   if (workOrder.error) return { ok: false, message: workOrder.error.message };
 
   await supabase!.from('maintenance_requests').update({ status: 'Assigned' }).eq('id', job.data.id);
   await notifyContractor(job.data.company_id, job.data.building_id, contractor.data.id, 'contractor_assigned', 'New assigned job', job.data.title);
+  if (job.data.resident_id) await insertNotification(job.data.company_id, job.data.building_id, job.data.resident_id, 'contractor_assigned', 'Contractor assigned', `${contractor.data.company_name} has been assigned.`);
   await insertAudit(job.data.company_id, job.data.building_id, user.id, 'ASSIGN_CONTRACTOR', 'work_orders', workOrder.data.id);
-  return { ok: true, message: 'Contractor assignment saved in Supabase.' };
+  return { ok: true, message: `${contractor.data.company_name} assigned.` };
 }
 
 export async function updateReportIssueStatus(account: TestAccount | null, id: string, status: string): Promise<MvpActionResult> {
@@ -463,7 +474,9 @@ export async function updateMaintenanceRequestStatus(account: TestAccount | null
   if (!maintenance.data) return { ok: false, message: 'Maintenance request not found.' };
   const update = await supabase!.from('maintenance_requests').update({ status }).eq('id', resolvedId);
   if (update.error) return { ok: false, message: update.error.message };
-  await supabase!.from('work_orders').update({ status }).eq('maintenance_request_id', resolvedId);
+  const workOrderPatch: Record<string, string> = { status };
+  if (status === 'Complete' || status === 'Completed') workOrderPatch.completed_at = new Date().toISOString();
+  await supabase!.from('work_orders').update(workOrderPatch).eq('maintenance_request_id', resolvedId);
 
   if (maintenance.data.resident_id) {
     await supabase!.from('messages').insert({
@@ -512,6 +525,77 @@ export async function addContractorUpdate(account: TestAccount | null, maintenan
   if (residentId) await insertNotification(workOrder.data.company_id, workOrder.data.building_id, residentId, 'contractor_update', 'Maintenance update', note ?? status);
   await insertAudit(workOrder.data.company_id, workOrder.data.building_id, null, 'CONTRACTOR_UPDATE', 'contractor_job_updates', update.data.id);
   return { ok: true, message: 'Contractor update saved in Supabase.' };
+}
+
+export async function saveContractor(account: TestAccount | null, payload: Record<string, string>, contractorId?: string): Promise<MvpActionResult> {
+  const context = await requireUserContext(account);
+  if (!context.ok) return context;
+  const { user, membership } = context;
+  if (!['manager', 'portfolio_admin', 'super_admin'].includes(account?.role ?? 'resident')) return { ok: false, message: 'Only managers can manage contractors.' };
+
+  const notes = contractorNotes(payload.notes, payload.status);
+  const contractorPayload = {
+    company_id: membership.company_id,
+    company_name: payload.company,
+    contact_person: payload.contact,
+    email: payload.email,
+    phone: payload.phone,
+    trade_category: payload.trade,
+    notes,
+    licence_number: '',
+    service_areas: ['Sydney'],
+    average_response_minutes: 0,
+    jobs_completed: 0,
+    rating: 0
+  };
+
+  const existingId = contractorId ? databaseContractorId(contractorId) : undefined;
+  const result = existingId
+    ? await supabase!.from('contractors').update(contractorPayload).eq('id', existingId).select('id').single()
+    : await supabase!.from('contractors').insert(contractorPayload).select('id').single();
+  if (result.error) return { ok: false, message: result.error.message };
+  await insertAudit(membership.company_id, membership.building_id, user.id, existingId ? 'UPDATE_CONTRACTOR' : 'CREATE_CONTRACTOR', 'contractors', result.data.id);
+  return { ok: true, message: existingId ? 'Contractor updated.' : 'Contractor added.' };
+}
+
+export async function archiveContractor(account: TestAccount | null, contractorId: string): Promise<MvpActionResult> {
+  const context = await requireUserContext(account);
+  if (!context.ok) return context;
+  const { user, membership } = context;
+  const existingId = databaseContractorId(contractorId);
+  if (!existingId) return { ok: false, message: 'Contractor not found.' };
+  const existing = await supabase!.from('contractors').select('notes').eq('id', existingId).maybeSingle();
+  if (!existing.data) return { ok: false, message: 'Contractor not found.' };
+  const update = await supabase!.from('contractors').update({ notes: contractorNotes(stripContractorStatus(existing.data.notes), 'Inactive') }).eq('id', existingId);
+  if (update.error) return { ok: false, message: update.error.message };
+  await insertAudit(membership.company_id, membership.building_id, user.id, 'ARCHIVE_CONTRACTOR', 'contractors', existingId);
+  return { ok: true, message: 'Contractor archived.' };
+}
+
+export async function inviteContractor(account: TestAccount | null, contractorId: string): Promise<MvpActionResult> {
+  const context = await requireUserContext(account);
+  if (!context.ok) return context;
+  const { user, membership } = context;
+  const existingId = databaseContractorId(contractorId);
+  if (!existingId) return { ok: false, message: 'Contractor not found.' };
+  const contractor = await supabase!.from('contractors').select('*').eq('id', existingId).maybeSingle();
+  if (!contractor.data) return { ok: false, message: 'Contractor not found.' };
+
+  const response = await fetch('/api/invite-contractor', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      to: contractor.data.email,
+      businessName: contractor.data.company_name,
+      contactPerson: contractor.data.contact_person,
+      atlasUrl: typeof window === 'undefined' ? 'https://strata-sandy.vercel.app' : window.location.origin
+    })
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) return { ok: false, message: result.error ?? 'Contractor invitation email could not be sent.' };
+
+  await insertAudit(membership.company_id, membership.building_id, user.id, 'INVITE_CONTRACTOR', 'contractors', existingId);
+  return { ok: true, message: `Invitation sent to ${contractor.data.email}.` };
 }
 
 export async function createNotice(account: TestAccount | null, payload?: Partial<Notice>): Promise<MvpActionResult> {
@@ -824,6 +908,45 @@ function localContractorId(id?: string | null) {
     '00000000-0000-4000-8000-000000000703': 'c3'
   };
   return id ? ids[id] ?? id : undefined;
+}
+
+function databaseContractorId(id?: string | null) {
+  const ids: Record<string, string> = {
+    c3: '00000000-0000-4000-8000-000000000701'
+  };
+  return id ? ids[id] ?? id : undefined;
+}
+
+function contractorNotes(notes?: string | null, status = 'Active') {
+  const cleanNotes = stripContractorStatus(notes ?? '');
+  return `[${status}]${cleanNotes ? ` ${cleanNotes}` : ''}`;
+}
+
+function stripContractorStatus(notes?: string | null) {
+  return (notes ?? '').replace(/^\[(Active|Inactive)\]\s*/i, '').trim();
+}
+
+function contractorStatus(notes?: string | null): Contractor['status'] {
+  return /^\[Inactive\]/i.test(notes ?? '') ? 'Inactive' : 'Active';
+}
+
+function mapContractor(row: any): Contractor {
+  return {
+    id: localContractorId(row.id) ?? row.id,
+    company: row.company_name,
+    contact: row.contact_person,
+    trade: row.trade_category,
+    email: row.email,
+    phone: row.phone ?? '',
+    licence: row.licence_number ?? '',
+    insuranceExpiry: row.insurance_expiry ?? '',
+    response: row.average_response_minutes ? `${row.average_response_minutes}m` : 'Not tracked',
+    completed: row.jobs_completed ?? 0,
+    rating: Number(row.rating ?? 0),
+    serviceAreas: row.service_areas ?? [],
+    notes: stripContractorStatus(row.notes),
+    status: contractorStatus(row.notes)
+  };
 }
 
 function mapNotice(row: any): Notice {
