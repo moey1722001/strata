@@ -423,9 +423,9 @@ const defaultRenovationRules: BuildingRenovationRule[] = [
 export const buildingConfigurations: BuildingConfiguration[] = [
   {
     buildingId: 'b1',
-    profile: { name: 'Harbourline Residences', buildingType: 'High-rise residential with concierge', notes: 'Lifts, rooftop, BBQ and package collection enabled.' },
+    profile: { name: 'Atlas Residences', buildingType: 'High-rise residential with concierge', notes: 'Lifts, rooftop, BBQ and package collection enabled.' },
     facilities: [
-      { id: 'b1-bbq', name: 'BBQ area', description: 'Resident BBQ area with harbour outlook.', location: 'Level 8 rooftop', availability: 'Mon-Sun 8am-9pm', maxBookingLength: '3 hours', advanceNotice: '24 hours', approvalRequired: true, feePlaceholder: '$150 deposit placeholder', capacity: 20, rules: 'Clean area after use. No glass on rooftop.', visibility: 'all residents', status: 'active' },
+      { id: 'b1-bbq', name: 'BBQ area', description: 'Resident BBQ area with harbour outlook.', location: 'Level 8 rooftop', availability: 'Mon-Sun 8am-9pm', maxBookingLength: '3 hours', advanceNotice: '24 hours', approvalRequired: true, feePlaceholder: '$150 deposit', capacity: 20, rules: 'Clean area after use. No glass on rooftop.', visibility: 'all residents', status: 'active' },
       { id: 'b1-rooftop', name: 'Rooftop', description: 'Shared rooftop terrace.', location: 'Level 8', availability: 'Mon-Sun 7am-10pm', maxBookingLength: '2 hours', advanceNotice: '24 hours', approvalRequired: true, feePlaceholder: 'No fee', capacity: 40, rules: 'Noise restrictions after 9pm.', visibility: 'all residents', status: 'active' },
       { id: 'b1-parking', name: 'Visitor parking', description: 'Short-stay visitor bay.', location: 'Basement B1', availability: 'Mon-Sun', maxBookingLength: '8 hours', advanceNotice: '12 hours', approvalRequired: false, feePlaceholder: 'No fee', capacity: 1, rules: 'Display booking confirmation.', visibility: 'all residents', status: 'active' }
     ],
@@ -458,7 +458,7 @@ export const buildingConfigurations: BuildingConfiguration[] = [
     profile: { name: 'Glebe Foundry', buildingType: 'Converted warehouse', notes: 'No package collection, no pool, loading dock and lift move bookings only.' },
     facilities: [
       { id: 'b2-loading', name: 'Loading dock', description: 'Loading dock for moves and deliveries.', location: 'Rear laneway', availability: 'Mon-Fri 8am-4pm', maxBookingLength: '2 hours', advanceNotice: '48 hours', approvalRequired: true, feePlaceholder: 'No fee', capacity: 1, rules: 'Traffic management may be required.', visibility: 'all residents', status: 'active' },
-      { id: 'b2-lift-move', name: 'Lift move booking', description: 'Goods lift reservation.', location: 'Goods lift', availability: 'Mon-Fri 9am-3pm', maxBookingLength: '4 hours', advanceNotice: '72 hours', approvalRequired: true, feePlaceholder: '$300 bond placeholder', capacity: 1, rules: 'Lift blanket required.', visibility: 'all residents', status: 'active' }
+      { id: 'b2-lift-move', name: 'Lift move booking', description: 'Goods lift reservation.', location: 'Goods lift', availability: 'Mon-Fri 9am-3pm', maxBookingLength: '4 hours', advanceNotice: '72 hours', approvalRequired: true, feePlaceholder: '$300 bond', capacity: 1, rules: 'Lift blanket required.', visibility: 'all residents', status: 'active' }
     ],
     contacts: [
       { id: 'b2-sm', type: 'Strata manager', name: 'Noah Haddad', detail: 'manager@northshorestrata.com.au', visibility: 'all residents' },
@@ -706,7 +706,7 @@ export const facilityBookings: SimpleRecord[] = [
   owner: people[index].name,
   status: index % 3 === 0 ? 'Approved' : 'Submitted',
   due: `2026-06-${String(8 + index).padStart(2, '0')}`,
-  meta: index % 2 === 0 ? 'Deposit placeholder' : 'Manager approval required'
+  meta: index % 2 === 0 ? 'Deposit required' : 'Manager approval required'
 }));
 
 export const packages: SimpleRecord[] = [
@@ -836,7 +836,7 @@ export const company = {
   plan: 'Scale',
   mrr: 38400,
   usage: 78,
-  featureFlags: ['Committee e-signatures', 'Email notifications', 'Accounting integration placeholder']
+  featureFlags: ['Committee e-signatures', 'Email notifications', 'Accounting integration']
 };
 
 export function notificationChannels(priority: Priority) {

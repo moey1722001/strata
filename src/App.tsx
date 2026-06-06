@@ -215,7 +215,7 @@ function App() {
     async function loadWorkspace() {
       try {
         const diagnostic = await runSupabaseDiagnostic(currentAccount);
-        if (active && !diagnostic.ok) setActionStatus(diagnostic.message);
+        if (active && !diagnostic.ok) setActionStatus(cleanActionMessage(diagnostic.message));
         const latest = await loadMvpData(currentAccount, role);
         if (active) setMvpData(latest);
       } catch (error) {
@@ -421,9 +421,6 @@ function App() {
                 </select>
               </label>
             )}
-            <span className="hidden rounded-full bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-700 ring-1 ring-blue-200 lg:inline-flex">
-              Testing Mode
-            </span>
             <div className="hidden h-10 w-10 place-items-center rounded-full bg-primary text-white sm:grid" aria-label="Atlas workspace">
               <AtlasMark className="h-7 w-7" />
             </div>
@@ -993,7 +990,7 @@ function PortfolioDashboard({ role, onNavigate, data }: { role: Role; onNavigate
   return (
     <div className="space-y-6">
       <SectionHeader
-        eyebrow="Atlas sandbox"
+        eyebrow="Atlas Residences"
         title="Atlas Residences"
         action={<button className="btn-primary" onClick={() => onNavigate('messages')}><MessageSquare size={17} /> Test messages</button>}
       />
@@ -1259,33 +1256,75 @@ function CommunicationsHub({ role, onNavigate, data, actions }: { role: Role; on
 }
 
 function ReportIssuePage({ role, data, actions, buildingConfig }: { role: Role; data: MvpData; actions: FlowActions; buildingConfig: BuildingConfiguration }) {
-  const scopedIssues = data.reportIssues;
   const categories = enabledIssueCategories(buildingConfig);
+  const openRequests = data.maintenanceRequests.filter((request) => !['Completed', 'Closed', 'Rejected'].includes(request.status));
 
   return (
     <div className="mx-auto max-w-5xl space-y-6">
-      <SectionHeader eyebrow="Report Issue" title="One simple flow for residents" action={<button className="btn-primary" onClick={() => actions.openForm('reportIssue')}><Plus size={17} /> Submit issue</button>} />
-      <div className="grid gap-5 lg:grid-cols-[0.8fr_1.2fr]">
-        <Panel title="Available issue categories">
-          <div className="grid gap-3">
-            <div className="grid grid-cols-2 gap-2">
-              {categories.map((category) => (
-                <div className="rounded-2xl border border-line px-3 py-3 text-sm font-semibold" key={category.id}>
-                  <span>{category.label}</span>
-                  <span className="mt-1 block text-xs font-medium text-slate-400">Default priority: {category.defaultPriority}</span>
-                </div>
-              ))}
-            </div>
-            <div className="rounded-2xl bg-slate-50 p-4 text-sm leading-6 text-slate-600">
-              {buildingConfig.profile.name} only shows issue categories enabled for this building. The system routes each report into maintenance, incidents, or both based on category and severity.
-            </div>
-            <button className="btn-primary justify-center" onClick={() => actions.openForm('reportIssue')}><Plus size={17} /> Start report</button>
+      <SectionHeader eyebrow="Report issue" title="Tell your strata manager what needs attention" action={<button className="btn-primary" onClick={() => actions.openForm('reportIssue')}><Plus size={17} /> Start report</button>} />
+      <Panel title="Start a report">
+        <div className="grid gap-5 lg:grid-cols-[1fr_1.2fr] lg:items-center">
+          <div>
+            <p className="text-sm leading-6 text-slate-600">Choose the closest category, describe what happened, and Atlas will send it to the strata manager for review.</p>
+            <button className="btn-primary mt-5" onClick={() => actions.openForm('reportIssue')}><Plus size={17} /> Report an issue</button>
           </div>
-        </Panel>
-        <Panel title="Your tracked issues">
-          <ReportIssueList issues={scopedIssues} />
-        </Panel>
-      </div>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+            {categories.slice(0, 9).map((category) => (
+              <div className="rounded-2xl border border-line bg-white px-3 py-3 text-sm font-semibold" key={category.id}>
+                {category.label}
+              </div>
+            ))}
+          </div>
+        </div>
+      </Panel>
+      <Panel title="Open requests">
+        {openRequests.length ? (
+          <div className="divide-y divide-line">
+            {openRequests.map((request) => (
+              <button className="flex w-full items-center justify-between gap-4 py-4 text-left" key={request.id} onClick={() => actions.openForm('reportIssue')}>
+                <div>
+                  <p className="font-semibold">{request.title}</p>
+                  <p className="mt-1 text-sm text-slate-500">{request.category} · Submitted {formatDate(request.submitted)}</p>
+                </div>
+                <Badge label={request.status} tone={request.priority} />
+              </button>
+            ))}
+          </div>
+        ) : (
+          <ResidentEmpty copy="You have no open requests." action="Create one" onClick={() => actions.openForm('reportIssue')} />
+        )}
+      </Panel>
+    </div>
+  );
+}
+
+function ReportIssueList({ issues, managerView = false, actions }: { issues: ReportIssue[]; managerView?: boolean; actions?: FlowActions }) {
+  if (!issues.length) {
+    return <EmptyState title="No reported issues" copy={managerView ? 'New resident reports will appear here for review.' : 'Your submitted issues will appear here.'} />;
+  }
+
+  return (
+    <div className="space-y-3">
+      {issues.map((issue) => (
+        <article className="rounded-2xl border border-line p-4" key={issue.id}>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap gap-2">
+              <Badge label={issue.severity} tone={issue.severity} />
+              {isNewRecord(issue) && <span className="pill bg-blue-50 text-blue-700 ring-blue-200">NEW</span>}
+            </div>
+            <Badge label={issue.status} />
+          </div>
+          <h3 className="mt-3 font-semibold">{issue.title}</h3>
+          <p className="mt-1 text-sm text-slate-500">{issue.category} · Lot {issue.unit} · {formatDate(issue.submitted)}</p>
+          <p className="mt-3 text-sm text-slate-600">{managerView ? `Resident: ${issue.resident}` : `Status: ${issue.status}`}</p>
+          {managerView && (
+            <div className="mt-4 flex flex-wrap gap-2">
+              {issue.status !== 'Under Review' && <button className="btn-secondary" onClick={() => actions?.updateIssueStatus(issue.id, 'Under Review')}>Start review</button>}
+              <button className="btn-secondary" onClick={() => actions?.openForm('assignContractor', { id: issue.id, title: issue.title })}>Assign contractor</button>
+            </div>
+          )}
+        </article>
+      ))}
     </div>
   );
 }
@@ -1577,7 +1616,7 @@ function FacilitiesPage({ role, data, actions, buildingConfig }: { role: Role; d
                   <MiniStat label="Availability" value={facility.availability} />
                   <MiniStat label="Max length" value={facility.maxBookingLength} />
                   <MiniStat label="Notice" value={facility.advanceNotice} />
-                  <MiniStat label="Visibility" value={facility.visibility} />
+                  <MiniStat label="Rules" value={facility.rules} />
                 </div>
               </article>
             ))}
@@ -2199,7 +2238,7 @@ function settingsFormConfig(activeForm: ActiveSettingForm, buildingConfig: Build
         { name: 'maxBookingLength', label: 'Max booking length', required: true },
         { name: 'advanceNotice', label: 'Advance notice required', required: true },
         { name: 'approvalRequired', label: 'Approval required', options: ['Yes', 'No'], required: true },
-        { name: 'feePlaceholder', label: 'Deposit/fee placeholder' },
+        { name: 'feePlaceholder', label: 'Deposit or fee' },
         { name: 'capacity', label: 'Capacity', required: true },
         { name: 'visibility', label: 'Visibility', options: ['all residents', 'owners only', 'tenants allowed', 'committee only'], required: true },
         { name: 'status', label: 'Status', options: ['active', 'inactive'], required: true },
@@ -2245,7 +2284,7 @@ function settingsFormConfig(activeForm: ActiveSettingForm, buildingConfig: Build
         { name: 'label', label: 'Category label', required: true },
         { name: 'enabled', label: 'Enabled', options: ['Yes', 'No'], required: true },
         { name: 'defaultPriority', label: 'Default priority', options: ['Low', 'Medium', 'High', 'Emergency'], required: true },
-        { name: 'defaultContractorId', label: 'Default contractor placeholder' }
+        { name: 'defaultContractorId', label: 'Default contractor' }
       ]
     };
   }
@@ -2580,7 +2619,7 @@ function formConfig(kind: FormKind, role: Role, context: FormContext | undefined
     },
     reportIssue: {
       title: 'Report issue',
-      copy: 'Creates a resident issue and matching maintenance request for manager triage.',
+      copy: 'Tell the strata manager what happened. They will review it and keep you updated.',
       submitLabel: 'Submit issue',
       defaults: { title: `${issueOptions[0] ?? 'Building'} issue`, category: issueOptions[0] ?? 'Other', severity: enabledIssueCategories(buildingConfig)[0]?.defaultPriority ?? 'Medium', description: '' },
       fields: [
@@ -2592,7 +2631,7 @@ function formConfig(kind: FormKind, role: Role, context: FormContext | undefined
     },
     bookFacility: {
       title: 'Book facility',
-      copy: 'Creates a booking request visible in the manager Facilities queue.',
+      copy: 'Request a time for a shared facility. The manager will approve or decline it.',
       submitLabel: 'Request booking',
       defaults: { title: facilityOptions[0] ?? 'Facility booking', date: '2026-06-18', notes: '' },
       fields: [
@@ -2638,38 +2677,6 @@ function formConfig(kind: FormKind, role: Role, context: FormContext | undefined
     }
   };
   return configs[kind];
-}
-
-function ReportIssueList({ issues, managerView = false, actions }: { issues: ReportIssue[]; managerView?: boolean; actions?: FlowActions }) {
-  if (!issues.length) {
-    return <EmptyState title="No reported issues" copy={managerView ? 'New resident reports will appear here for triage.' : 'Your submitted issues will appear here.'} />;
-  }
-
-  return (
-    <div className="space-y-3">
-      {issues.map((issue) => (
-        <article className="rounded-2xl border border-line p-4" key={issue.id}>
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex flex-wrap gap-2">
-              <Badge label={issue.severity} tone={issue.severity} />
-              {isNewRecord(issue) && <span className="pill bg-blue-50 text-blue-700 ring-blue-200">NEW</span>}
-            </div>
-            <Badge label={issue.status} />
-          </div>
-          <h3 className="mt-3 font-semibold">{issue.title}</h3>
-          <p className="mt-1 text-sm text-slate-500">{issue.category} · Lot {issue.unit} · {issue.submitted}</p>
-          <p className="mt-3 text-sm text-slate-600">{managerView ? `Route to: ${issue.outcome}` : `Progress: ${issue.status} · ${issue.outcome}`}</p>
-          {managerView && (
-            <div className="mt-4 flex flex-wrap gap-2">
-              <button className="btn-secondary" onClick={() => actions?.updateIssueStatus(issue.id, 'Under Review')}>Triage</button>
-              <button className="btn-secondary" onClick={() => actions?.openForm('assignContractor', { id: issue.id, title: issue.title })}>Assign contractor</button>
-              <button className="btn-secondary" onClick={() => actions?.notifyResident(issue.id)}>Notify resident</button>
-            </div>
-          )}
-        </article>
-      ))}
-    </div>
-  );
 }
 
 function ActionList({ actions }: { actions: [string, (() => void) | 'deferred'][] }) {
@@ -3151,7 +3158,8 @@ function levyToPrivateRecord(levy: LevyRecord): SimpleRecord {
 
 function cleanActionMessage(message: string) {
   return message
-    .replace('Using local seeded test account. Configure Supabase env vars to use Supabase Auth.', 'Workspace ready. Use Switch Role to test each Atlas experience.');
+    .replace('Using local seeded test account. Configure Supabase env vars to use Supabase Auth.', 'Workspace ready. Use Switch Role to test each Atlas experience.')
+    .replace(/Supabase diagnostic: .*$/i, 'Atlas could not connect to workspace data. Refresh the page or check the Supabase connection.');
 }
 
 function stringPayload(payload: Record<string, string | File>) {
