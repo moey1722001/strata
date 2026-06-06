@@ -176,7 +176,7 @@ async function loadContractorMvpData(account: TestAccount, userId: string): Prom
     documents: (documentsForContractor.data ?? []).map((row) => ({
       id: row.id,
       title: row.document_type,
-      buildingId: row.building_id ?? '00000000-0000-4000-8000-000000000101',
+      buildingId: localBuildingId(row.building_id),
       owner: account.name,
       status: row.expiry_date ? 'Visible' : 'Open',
       due: row.expiry_date,
@@ -607,12 +607,30 @@ function classifySupabaseError(error: { code?: string; message?: string }) {
   return 'Connection error';
 }
 
+function localBuildingId(id?: string | null) {
+  const ids: Record<string, string> = {
+    '00000000-0000-4000-8000-000000000101': 'b1',
+    '00000000-0000-4000-8000-000000000102': 'b2',
+    '00000000-0000-4000-8000-000000000103': 'b3',
+    '00000000-0000-4000-8000-000000000104': 'b4'
+  };
+  return id ? ids[id] ?? id : 'b1';
+}
+
+function localContractorId(id?: string | null) {
+  const ids: Record<string, string> = {
+    '00000000-0000-4000-8000-000000000701': 'c3',
+    '00000000-0000-4000-8000-000000000703': 'c3'
+  };
+  return id ? ids[id] ?? id : undefined;
+}
+
 function mapNotice(row: any): Notice {
   return {
     id: row.id,
     title: row.title,
     category: row.category,
-    buildingId: row.building_id,
+    buildingId: localBuildingId(row.building_id),
     priority: row.priority,
     audience: row.target_audience,
     publishAt: row.scheduled_publish_at ?? row.created_at,
@@ -649,7 +667,7 @@ function mapIssue(row: any): ReportIssue {
     title: row.title,
     category: row.category,
     severity: row.severity,
-    buildingId: row.building_id,
+    buildingId: localBuildingId(row.building_id),
     unit: row.lots?.unit_number ?? '1A',
     resident: row.users?.full_name ?? 'Resident',
     outcome: row.routing_outcome,
@@ -663,10 +681,10 @@ function mapMaintenance(row: any, workOrder?: any): MaintenanceRequest {
     id: row.id,
     title: row.title,
     category: row.category,
-    buildingId: row.building_id,
+    buildingId: localBuildingId(row.building_id),
     unit: row.lots?.unit_number ?? '1A',
     resident: row.users?.full_name ?? 'Resident',
-    contractorId: row.contractor_id ?? workOrder?.contractor_id,
+    contractorId: localContractorId(row.contractor_id ?? workOrder?.contractor_id),
     priority: row.priority,
     status: workOrder?.status ?? row.status,
     submitted: row.created_at,
@@ -680,7 +698,7 @@ function mapMessage(row: any): SimpleRecord {
   return {
     id: row.id,
     title: row.subject ?? row.body?.slice(0, 48) ?? 'Message',
-    buildingId: row.building_id ?? '00000000-0000-4000-8000-000000000101',
+    buildingId: localBuildingId(row.building_id),
     owner: row.sender?.full_name ?? 'System',
     status: row.read_at ? 'Open' : 'Unread',
     due: row.created_at,
@@ -692,7 +710,7 @@ function mapDocument(row: any): SimpleRecord {
   return {
     id: row.id,
     title: row.title,
-    buildingId: row.building_id ?? '00000000-0000-4000-8000-000000000101',
+    buildingId: localBuildingId(row.building_id),
     owner: row.uploaded_by_user?.full_name ?? 'Manager',
     status: row.visibility === 'committee' ? 'Committee only' : 'Visible',
     due: row.created_at,
@@ -704,7 +722,7 @@ function mapFacilityBooking(row: any): SimpleRecord {
   return {
     id: row.id,
     title: row.facility,
-    buildingId: row.building_id,
+    buildingId: localBuildingId(row.building_id),
     owner: row.resident?.full_name ?? 'Resident',
     status: row.status,
     due: row.starts_at,
@@ -716,7 +734,7 @@ function mapRenovation(row: any): SimpleRecord {
   return {
     id: row.id,
     title: row.contractor_details?.title ?? row.scope_of_works?.slice(0, 48) ?? 'Renovation request',
-    buildingId: row.building_id,
+    buildingId: localBuildingId(row.building_id),
     owner: row.resident?.full_name ?? 'Resident',
     status: row.status,
     due: row.proposed_dates ?? 'Not set',
@@ -728,7 +746,7 @@ function mapMotion(row: any, votes: any[]): SimpleRecord {
   return {
     id: row.id,
     title: row.title,
-    buildingId: row.building_id,
+    buildingId: localBuildingId(row.building_id),
     owner: 'Committee',
     status: row.status,
     due: row.closes_at,
@@ -741,7 +759,7 @@ function mapSimple(row: any, title: string, meta: string): SimpleRecord {
   return {
     id: row.id,
     title,
-    buildingId: row.building_id ?? '00000000-0000-4000-8000-000000000101',
+    buildingId: localBuildingId(row.building_id),
     owner: row.owner_name ?? row.sender_name ?? row.uploaded_by ?? 'System',
     status: row.status ?? (row.read_at ? 'Open' : 'Unread'),
     due: row.created_at ?? row.due_date,
