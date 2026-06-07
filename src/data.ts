@@ -91,6 +91,7 @@ export type MaintenanceRequest = {
   slaHours: number;
   overdue: boolean;
   access: string;
+  description?: string;
   timeline?: string[];
 };
 
@@ -271,6 +272,7 @@ export type SimpleRecord = {
   createdBy?: string;
   senderId?: string;
   recipientId?: string;
+  recipientEmail?: string;
   senderRole?: Role;
   recipientRole?: Role;
   unit?: string;

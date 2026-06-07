@@ -702,10 +702,13 @@ export async function sendResidentMessage(account: TestAccount | null, payload?:
   const requestedRecipient = payload?.recipientId
     ? await supabase!.from('users').select('*').eq('id', payload.recipientId).maybeSingle()
     : { data: null };
+  const emailRecipient = !requestedRecipient.data && payload?.recipientEmail
+    ? await findUserByEmail(payload.recipientEmail)
+    : null;
   const recipientEmail = account?.role === 'manager' || account?.role === 'portfolio_admin'
     ? 'resident@example.com'
     : 'manager@northshorestrata.com.au';
-  const recipient = requestedRecipient.data ?? await findUserByEmail(recipientEmail);
+  const recipient = requestedRecipient.data ?? emailRecipient ?? await findUserByEmail(recipientEmail);
   if (!recipient) return { ok: false, message: 'Message recipient profile not found.' };
   const recipientMembership = account?.role === 'manager' ? await firstMembership(recipient.id) : null;
   const messageCompanyId = recipientMembership?.company_id ?? membership.company_id;
@@ -1166,6 +1169,7 @@ function mapMaintenance(row: any, workOrder?: any, jobUpdates: any[] = [], statu
     slaHours: 48,
     overdue: row.sla_due_at ? new Date(row.sla_due_at).getTime() < Date.now() : false,
     access: row.preferred_access_times ?? 'Resident appointment required',
+    description: row.description,
     timeline: [
       `Submitted by ${row.users?.full_name ?? 'resident'}: ${row.created_at}`,
       `Current status: ${currentStatus}`,

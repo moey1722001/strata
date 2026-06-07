@@ -411,14 +411,18 @@ function App() {
     }
     if (activeForm.kind === 'updateJobStatus' && targetId) {
       const communication: MaintenanceCommunicationChoice = {
-        audience: field('audience') === 'All residents - publish notice' ? 'building' : 'lot',
+        audience: role !== 'contractor' && field('audience') === 'All residents - publish notice' ? 'building' : 'lot',
         noticeTitle: field('noticeTitle'),
         noticeBody: field('noticeBody')
       };
+      const proposedTime = field('proposedDate') && field('proposedTime')
+        ? ` Proposed attendance: ${field('proposedDate')} at ${field('proposedTime')}.`
+        : '';
+      const updateNote = `${field('note')}${proposedTime}`.trim();
       if (role === 'contractor') {
-        await flowActions.contractorUpdate(targetId, field('status'), field('note'), communication);
+        await flowActions.contractorUpdate(targetId, field('status'), updateNote, communication);
       } else {
-        await flowActions.updateMaintenanceStatus(targetId, field('status'), field('note'), communication);
+        await flowActions.updateMaintenanceStatus(targetId, field('status'), updateNote, communication);
       }
     }
     if (activeForm.kind === 'voteMotion') {
@@ -813,14 +817,19 @@ const managerUrgencyRank: Record<ManagerActionItem['urgency'], number> = {
 };
 
 function ManagerDashboard({ role, onNavigate, data, actions }: { role: Role; onNavigate: (page: PageId) => void; data: MvpData; actions: FlowActions }) {
+  const [recentFilter, setRecentFilter] = useState('All');
   const unreadMessages = data.messages.filter((message) => message.status === 'Unread');
-  const overdueRequests = data.maintenanceRequests.filter((request) => request.overdue && !['Completed', 'Closed', 'Rejected'].includes(request.status));
-  const awaitingAssignment = data.maintenanceRequests.filter((request) => !request.contractorId && !request.overdue && !['Completed', 'Closed', 'Rejected'].includes(request.status));
-  const contractorUpdates = [...data.contractorUpdates].sort((a, b) => recordTime(b.due) - recordTime(a.due)).slice(0, 6);
+  const overdueRequests = data.maintenanceRequests.filter((request) => request.overdue && !isMaintenanceDone(request));
+  const awaitingAssignment = data.maintenanceRequests.filter((request) => !request.contractorId && !request.overdue && !isMaintenanceDone(request));
+  const contractorUpdates = [...data.contractorUpdates].sort((a, b) => recordTime(b.due) - recordTime(a.due));
+  const contractorUpdatesNeedingReview = contractorUpdates.filter((update) => (
+    ['Review', 'Pending review', 'Requires approval'].includes(update.status)
+    && !['Accepted', 'In Progress', 'Complete', 'Completed'].includes(update.title)
+  ));
   const pendingBookings = data.facilityBookings.filter((booking) => ['Submitted', 'Pending', 'Requested'].includes(booking.status));
   const draftNotices = data.notices.filter((notice) => notice.publicationStatus === 'Draft');
   const documentsForReview = data.documents.filter((document) => ['Review', 'Pending review'].includes(document.status));
-  const completedJobs = data.maintenanceRequests.filter((request) => ['Completed', 'Closed'].includes(request.status)).slice(0, 4);
+  const completedJobs = data.maintenanceRequests.filter(isMaintenanceDone).slice(0, 4);
   const approvedBookings = data.facilityBookings.filter((booking) => booking.status === 'Approved').slice(0, 4);
   const publishedNotices = data.notices.filter((notice) => notice.publicationStatus !== 'Draft').slice(0, 4);
 
@@ -857,7 +866,7 @@ function ManagerDashboard({ role, onNavigate, data, actions }: { role: Role; onN
       actionLabel: 'Assign contractor',
       onClick: () => actions.openForm('assignContractor', { id: request.id, title: request.title })
     })),
-    ...contractorUpdates.map((update) => ({
+    ...contractorUpdatesNeedingReview.map((update) => ({
       id: `contractor-update-${update.id}`,
       group: 'Contractor update awaiting review',
       title: update.title,
@@ -911,7 +920,7 @@ function ManagerDashboard({ role, onNavigate, data, actions }: { role: Role; onN
       actionLabel: 'Open maintenance',
       onClick: () => onNavigate('maintenance')
     })),
-    ...contractorUpdates.slice(0, 2).map((update) => managerRecordAction(update, 'Latest contractor update', 'Low', 'Review update', () => onNavigate('maintenance'))),
+    ...contractorUpdates.slice(0, 2).map((update) => managerRecordAction(update, 'Latest contractor update', 'Low', 'Open maintenance', () => onNavigate('maintenance'))),
     ...data.facilityBookings.slice(0, 2).map((booking) => managerRecordAction(booking, 'Latest facility booking', 'Low', 'Open booking', () => onNavigate('facilities'))),
     ...data.notices.slice(0, 2).map((notice) => ({
       id: `recent-notice-${notice.id}`,
@@ -925,6 +934,18 @@ function ManagerDashboard({ role, onNavigate, data, actions }: { role: Role; onN
     })),
     ...data.documents.slice(0, 2).map((document) => managerRecordAction(document, 'Latest uploaded document', 'Low', 'Open document', () => onNavigate('documents')))
   ].sort((a, b) => recordTime(b.due) - recordTime(a.due));
+  const recentFilters = ['All', 'Messages', 'Maintenance', 'Contractors', 'Facilities', 'Notices', 'Documents'];
+  const recentFilterTerms: Record<string, string> = {
+    Messages: 'message',
+    Maintenance: 'maintenance',
+    Contractors: 'contractor',
+    Facilities: 'facility',
+    Notices: 'notice',
+    Documents: 'document'
+  };
+  const visibleRecentItems = recentFilter === 'All'
+    ? recentItems
+    : recentItems.filter((item) => item.group.toLowerCase().includes(recentFilterTerms[recentFilter]));
 
   const completedItems: ManagerActionItem[] = [
     ...completedJobs.map((request) => ({
@@ -958,23 +979,36 @@ function ManagerDashboard({ role, onNavigate, data, actions }: { role: Role; onN
         action={<button className="btn-primary" onClick={() => actions.openForm('createNotice')}><Bell size={17} /> Create notice</button>}
       />
       <ManagerActionSection title="Attention required" items={attentionItems} emptyCopy="No unread messages, overdue work, pending bookings or workflow reviews." />
-      <ManagerActionSection title="Recent activity" items={recentItems} emptyCopy="New resident, contractor and manager activity will appear here." />
+      <ManagerActionSection
+        title="Recent activity"
+        items={visibleRecentItems}
+        emptyCopy="New resident, contractor and manager activity will appear here."
+        action={(
+          <div className="flex flex-wrap gap-2">
+            {recentFilters.map((filter) => (
+              <button className={`rounded-full px-3 py-1.5 text-xs font-semibold ring-1 ${recentFilter === filter ? 'bg-primary text-white ring-primary' : 'bg-white text-slate-600 ring-line'}`} key={filter} onClick={() => setRecentFilter(filter)}>
+                {filter}
+              </button>
+            ))}
+          </div>
+        )}
+      />
       <ManagerActionSection title="Completed recently" items={completedItems} emptyCopy="Completed jobs, approved bookings and published notices will appear here." />
     </div>
   );
 }
 
-function ManagerActionSection({ title, items, emptyCopy }: { title: string; items: ManagerActionItem[]; emptyCopy: string }) {
+function ManagerActionSection({ title, items, emptyCopy, action }: { title: string; items: ManagerActionItem[]; emptyCopy: string; action?: ReactNode }) {
   if (!items.length) {
     return (
-      <Panel title={title}>
+      <Panel title={title} action={action}>
         <p className="py-6 text-sm text-slate-500">{emptyCopy}</p>
       </Panel>
     );
   }
 
   return (
-    <Panel title={title}>
+    <Panel title={title} action={action}>
       <div className="divide-y divide-line">
         {items.map((item) => (
           <button key={item.id} className="grid w-full gap-4 py-4 text-left transition hover:bg-slate-50 sm:grid-cols-[140px_1fr_auto]" onClick={item.onClick}>
@@ -1577,6 +1611,7 @@ function MessagesPage({ role, data, actions }: { role: Role; data: MvpData; acti
     if (!activeParticipant || !draft.trim()) return;
     await actions.sendMessage({
       recipientId: activeParticipant.id,
+      recipientEmail: activeParticipant.email,
       title: activeConversation?.messages[0]?.title ?? `Conversation with ${activeParticipant.name}`,
       meta: draft.trim()
     });
@@ -1586,8 +1621,8 @@ function MessagesPage({ role, data, actions }: { role: Role; data: MvpData; acti
   return (
     <div className="flex min-h-0 flex-col space-y-5">
       <SectionHeader eyebrow="Messages" title={role === 'manager' ? 'Inbox' : 'Conversations'} />
-      <div className="grid h-[calc(100vh-180px)] min-h-[620px] overflow-hidden rounded-3xl border border-line bg-white shadow-soft lg:grid-cols-[310px_minmax(0,1fr)_300px]">
-        <aside className="flex min-h-0 flex-col border-b border-line lg:border-b-0 lg:border-r">
+      <div className="flex flex-col overflow-hidden rounded-3xl border border-line bg-white shadow-soft lg:grid lg:h-[calc(100vh-180px)] lg:min-h-[620px] lg:grid-cols-[310px_minmax(0,1fr)_300px]">
+        <aside className="flex max-h-80 min-h-0 flex-col border-b border-line lg:max-h-none lg:border-b-0 lg:border-r">
           <div className="border-b border-line p-4">
             <label className="flex items-center gap-2 rounded-xl bg-slate-50 px-3 py-2">
               <Search size={16} className="text-slate-400" />
@@ -1617,7 +1652,7 @@ function MessagesPage({ role, data, actions }: { role: Role; data: MvpData; acti
           </div>
         </aside>
 
-        <section className="flex min-h-0 flex-col bg-white">
+        <section className="flex min-h-[560px] min-w-0 flex-col bg-white lg:min-h-0">
           {activeParticipant ? (
             <>
               <div className="shrink-0 border-b border-line px-5 py-4">
@@ -1685,10 +1720,14 @@ function MessagesPage({ role, data, actions }: { role: Role; data: MvpData; acti
 
 function DocumentsPage({ role, data, actions }: { role: Role; data: MvpData; actions: FlowActions }) {
   const [query, setQuery] = useState('');
+  const [category, setCategory] = useState('All');
   const records = role === 'contractor'
     ? contractorDocumentRecords(data.maintenanceRequests)
     : data.documents;
-  const filtered = records.filter((record) => `${record.title} ${record.meta ?? ''}`.toLowerCase().includes(query.trim().toLowerCase()));
+  const categories = ['All', ...Array.from(new Set(records.map((record) => record.meta ?? 'General').filter(Boolean)))];
+  const filtered = records
+    .filter((record) => category === 'All' || (record.meta ?? 'General') === category)
+    .filter((record) => `${record.title} ${record.meta ?? ''}`.toLowerCase().includes(query.trim().toLowerCase()));
   return (
     <div className="space-y-6">
       <SectionHeader
@@ -1701,6 +1740,13 @@ function DocumentsPage({ role, data, actions }: { role: Role; data: MvpData; act
           <Search size={17} className="text-slate-400" />
           <input className="w-full bg-transparent text-sm outline-none" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search documents by name or category" />
         </label>
+        <div className="mb-5 flex flex-wrap gap-2">
+          {categories.map((item) => (
+            <button className={`rounded-full px-3 py-1.5 text-xs font-semibold ring-1 ${category === item ? 'bg-primary text-white ring-primary' : 'bg-white text-slate-600 ring-line'}`} key={item} onClick={() => setCategory(item)}>
+              {item}
+            </button>
+          ))}
+        </div>
         <DocumentList records={filtered} />
       </Panel>
     </div>
@@ -1805,7 +1851,8 @@ function DocumentList({ records }: { records: SimpleRecord[] }) {
 
 function MaintenancePage({ role, data, actions }: { role: Role; data: MvpData; actions: FlowActions }) {
   if (role === 'contractor') {
-    const assigned = filterForRole(data.maintenanceRequests, 'contractor');
+    const assigned = filterForRole(data.maintenanceRequests, 'contractor').filter((request) => !isMaintenanceDone(request));
+    const finished = filterForRole(data.maintenanceRequests, 'contractor').filter(isMaintenanceDone);
     return (
       <div className="space-y-6">
         <SectionHeader eyebrow="Assigned jobs" title="Your Atlas work queue" />
@@ -1816,23 +1863,35 @@ function MaintenancePage({ role, data, actions }: { role: Role; data: MvpData; a
           onContractorUpdate={(id, status) => actions.openForm('updateJobStatus', { id, status, title: assigned.find((request) => request.id === id)?.title })}
           onStatusUpdate={(id, status) => actions.openForm('updateJobStatus', { id, status, title: assigned.find((request) => request.id === id)?.title })}
         />
+        {finished.length > 0 && (
+          <Panel title="Completed recently">
+            <MaintenanceCards requests={finished.slice(0, 4)} contractors={data.contractors} contractorView compact />
+          </Panel>
+        )}
       </div>
     );
   }
 
+  const activeRequests = data.maintenanceRequests.filter((request) => !isMaintenanceDone(request));
+  const completedRequests = data.maintenanceRequests.filter(isMaintenanceDone);
   return (
     <div className="space-y-6">
-      <SectionHeader eyebrow="Maintenance" title="Requests needing the next action" />
+      <SectionHeader eyebrow="Maintenance" title="Maintenance workspace" />
       <MaintenanceWorkflowSummary requests={data.maintenanceRequests} />
-      <Panel title="Work queue">
+      <Panel title="Needs action" action={<span className="text-sm font-semibold text-slate-500">{activeRequests.length} active</span>}>
         <MaintenanceCards
-          requests={data.maintenanceRequests}
+          requests={activeRequests}
           contractors={data.contractors}
           compact
           onAssignContractor={(id) => actions.openForm('assignContractor', { id, title: data.maintenanceRequests.find((request) => request.id === id)?.title })}
           onStatusUpdate={(id, status) => actions.openForm('updateJobStatus', { id, status, title: data.maintenanceRequests.find((request) => request.id === id)?.title })}
         />
       </Panel>
+      {completedRequests.length > 0 && (
+        <Panel title="Completed / addressed" action={<span className="text-sm font-semibold text-slate-500">{completedRequests.length} done</span>}>
+          <MaintenanceCards requests={completedRequests.slice(0, 6)} contractors={data.contractors} compact />
+        </Panel>
+      )}
       <ContractorManagementPanel data={data} actions={actions} />
     </div>
   );
@@ -1845,7 +1904,7 @@ function FacilitiesPage({ role, data, actions, buildingConfig, onNavigate }: { r
   const [selectedFacility, setSelectedFacility] = useState(facilities[0]?.name ?? '');
   const [calendarStart, setCalendarStart] = useState(startOfDay(new Date()));
   const [activeFacilityForm, setActiveFacilityForm] = useState<ActiveSettingForm | null>(null);
-  const calendarDays = Array.from({ length: 14 }, (_, index) => new Date(calendarStart.getTime() + index * 86400000));
+  const calendarDays = Array.from({ length: 35 }, (_, index) => new Date(calendarStart.getTime() + index * 86400000));
   const managerView = role === 'manager' || role === 'portfolio_admin' || role === 'super_admin';
 
   async function saveFacilityConfig(nextConfig: BuildingConfiguration, action: string) {
@@ -1968,7 +2027,7 @@ function FacilitiesPage({ role, data, actions, buildingConfig, onNavigate }: { r
               <EmptyState title="No facilities configured" copy="Add the first bookable facility for this building." />
             )}
           </Panel>
-          <Panel title="Building calendar" action={<div className="flex gap-2"><button className="btn-secondary" onClick={() => setCalendarStart(new Date(calendarStart.getTime() - 7 * 86400000))}>Previous</button><button className="btn-secondary" onClick={() => setCalendarStart(new Date(calendarStart.getTime() + 7 * 86400000))}>Next</button></div>}>
+          <Panel title="Building calendar" action={<div className="flex gap-2"><button className="btn-secondary" onClick={() => setCalendarStart(new Date(calendarStart.getTime() - 35 * 86400000))}>Previous</button><button className="btn-secondary" onClick={() => setCalendarStart(new Date(calendarStart.getTime() + 35 * 86400000))}>Next</button></div>}>
             <FacilityCalendar days={calendarDays} bookings={records} manager />
           </Panel>
           <Panel title="Booking requests">
@@ -3012,14 +3071,13 @@ function formConfig(kind: FormKind, role: Role, context: FormContext | undefined
     },
     reportIssue: {
       title: 'Report issue',
-      copy: 'Tell the strata manager what happened. They will review it and keep you updated.',
+      copy: 'Tell the strata manager what happened. They will assess priority, assign trades and keep you updated.',
       submitLabel: 'Submit issue',
-      defaults: { title: `${issueOptions[0] ?? 'Building'} issue`, category: issueOptions[0] ?? 'Other', severity: enabledIssueCategories(buildingConfig)[0]?.defaultPriority ?? 'Medium', description: '' },
+      defaults: { title: `${issueOptions[0] ?? 'Building'} issue`, category: issueOptions[0] ?? 'Other', description: '' },
       fields: [
         { name: 'title', label: 'Issue title', required: true },
         { name: 'category', label: 'Category', options: issueOptions.length ? issueOptions : ['Other'], required: true },
-        { name: 'severity', label: 'Severity', options: ['Low', 'Medium', 'High', 'Emergency'], required: true },
-        { name: 'description', label: 'Description', type: 'textarea', required: true }
+        { name: 'description', label: 'What happened?', type: 'textarea', required: true }
       ]
     },
     bookFacility: {
@@ -3099,22 +3157,33 @@ function formConfig(kind: FormKind, role: Role, context: FormContext | undefined
     },
     updateJobStatus: {
       title: 'Update job status',
-      copy: `Update ${recordTitle}. Choose whether this is a private lot update or a building-wide disruption notice.`,
+      copy: role === 'contractor'
+        ? `Update ${recordTitle}. Add the planned attendance time or completion note for the strata manager.`
+        : `Update ${recordTitle}. Choose whether this is a private lot update or a building-wide disruption notice.`,
       submitLabel: 'Save update',
       defaults: {
         status: context?.status ?? 'In Progress',
         audience: 'Lot owner only',
         note: defaultMaintenanceNote(context?.status),
+        proposedDate: nextDateValue(),
+        proposedTime: '09:00',
         noticeTitle: `${recordTitle}: ${context?.status ?? 'Maintenance update'}`,
         noticeBody: defaultBuildingNoticeBody(recordTitle, context?.status)
       },
-      fields: [
-        { name: 'status', label: 'Status', options: ['Accepted', 'In Progress', 'Complete', 'Resident Notified'], required: true },
-        { name: 'audience', label: 'Who needs to know?', options: ['Lot owner only', 'All residents - publish notice'], required: true },
-        { name: 'note', label: 'Lot owner update', type: 'textarea', required: true },
-        { name: 'noticeTitle', label: 'Building notice title', required: false, visibleWhen: (values) => values.audience === 'All residents - publish notice' },
-        { name: 'noticeBody', label: 'Building notice body', type: 'textarea', required: false, visibleWhen: (values) => values.audience === 'All residents - publish notice' }
-      ]
+      fields: role === 'contractor'
+        ? [
+            { name: 'status', label: 'Status', options: ['Accepted', 'In Progress', 'Complete'], required: true },
+            { name: 'proposedDate', label: 'Proposed work date', type: 'date', required: false },
+            { name: 'proposedTime', label: 'Proposed time', type: 'time', required: false },
+            { name: 'note', label: 'Update for strata manager', type: 'textarea', required: true }
+          ]
+        : [
+            { name: 'status', label: 'Status', options: ['Accepted', 'In Progress', 'Complete', 'Resident Notified'], required: true },
+            { name: 'audience', label: 'Who needs to know?', options: ['Lot owner only', 'All residents - publish notice'], required: true },
+            { name: 'note', label: 'Lot owner update', type: 'textarea', required: true },
+            { name: 'noticeTitle', label: 'Building notice title', required: false, visibleWhen: (values) => values.audience === 'All residents - publish notice' },
+            { name: 'noticeBody', label: 'Building notice body', type: 'textarea', required: false, visibleWhen: (values) => values.audience === 'All residents - publish notice' }
+          ]
     },
     voteMotion: {
       title: 'Vote on motion',
@@ -3244,23 +3313,36 @@ function MaintenanceCards({
             ? managerMaintenanceNextStep(request, onAssignContractor, onStatusUpdate)
             : residentMaintenanceStep(request);
         const assignedContractor = contractorRoster?.find((contractor) => contractor.id === request.contractorId);
+        const status = normalizedMaintenanceStatus(request);
+        const done = isMaintenanceDone(request);
         return (
-          <article className="rounded-3xl border border-line bg-white p-5 shadow-soft" key={request.id}>
+          <article className={`rounded-3xl border bg-white p-5 shadow-soft ${done ? 'border-line opacity-80' : 'border-slate-200'}`} key={request.id}>
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex flex-wrap gap-2">
-                <Badge label={request.priority} tone={request.priority} />
+                {!contractorView && !done && <Badge label={request.priority} tone={request.priority} />}
                 {isNewRecord(request) && <span className="pill bg-blue-50 text-blue-700 ring-blue-200">NEW</span>}
               </div>
-              <Badge label={request.overdue ? 'Overdue' : maintenanceWorkflowLabel(request)} />
+              <Badge label={request.overdue && !done ? 'Overdue' : maintenanceWorkflowLabel(request)} />
             </div>
             <h2 className="mt-4 text-lg font-semibold">{request.title}</h2>
             <p className="mt-1 text-sm text-slate-500">{buildingName(request.buildingId)} · Lot {request.unit} · {request.category}</p>
-            <div className="mt-5 grid gap-3 sm:grid-cols-3">
-              <MiniStat label={contractorView ? 'Resident' : 'Resident'} value={request.resident} />
+            <div className="mt-4 rounded-2xl bg-slate-50 p-4">
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">What the resident reported</p>
+              <p className="mt-2 text-sm leading-6 text-slate-700">{request.description || 'No description was provided.'}</p>
+            </div>
+            <div className="mt-4 flex flex-wrap gap-2">
+              {maintenanceStageLabels.map((stage) => (
+                <span className={`rounded-full px-3 py-1.5 text-xs font-semibold ring-1 ${stage === status ? 'bg-primary text-white ring-primary' : maintenanceStageComplete(stage, status) ? 'bg-emerald-50 text-emerald-700 ring-emerald-200' : 'bg-slate-50 text-slate-500 ring-line'}`} key={stage}>
+                  {stage}
+                </span>
+              ))}
+            </div>
+            <div className="mt-4 grid gap-3 sm:grid-cols-3">
+              <MiniStat label="Resident" value={`${request.resident} · Lot ${request.unit}`} />
               <MiniStat label="Contractor" value={assignedContractor?.company ?? (request.contractorId ? 'Assigned' : 'Unassigned')} />
               <MiniStat label="Access" value={request.access.includes('Permission') ? 'Permitted' : 'By appointment'} />
             </div>
-            <div className="mt-5 rounded-2xl border border-line bg-slate-50 p-4">
+            <div className="mt-5 rounded-2xl border border-line bg-white p-4">
               <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Next step</p>
               <h3 className="mt-2 font-semibold">{nextStep.title}</h3>
               <p className="mt-1 text-sm leading-6 text-slate-600">{nextStep.copy}</p>
@@ -3271,14 +3353,14 @@ function MaintenanceCards({
               )}
             </div>
             {request.timeline?.length ? (
-              <div className="mt-5 rounded-2xl bg-white p-4 ring-1 ring-line">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Timeline visible to resident</p>
+              <details className="mt-5 rounded-2xl bg-white p-4 ring-1 ring-line">
+                <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wide text-slate-500">Timeline</summary>
                 <div className="mt-3 space-y-2">
-                  {request.timeline.slice(-5).map((item) => (
-                    <p className="text-sm text-slate-600" key={item}>{item}</p>
+                  {request.timeline.slice(-4).map((item) => (
+                    <p className="text-sm leading-6 text-slate-600" key={item}>{item}</p>
                   ))}
                 </div>
-              </div>
+              </details>
             ) : null}
           </article>
         );
@@ -3294,11 +3376,23 @@ type MaintenanceNextStep = {
   action?: () => void;
 };
 
+const maintenanceStageLabels = ['New Request', 'Assigned', 'Accepted', 'In Progress', 'Complete', 'Resident Notified'];
+
+function maintenanceStageComplete(stage: string, currentStatus: string) {
+  const currentIndex = maintenanceStageLabels.indexOf(currentStatus);
+  const stageIndex = maintenanceStageLabels.indexOf(stage);
+  return currentIndex >= 0 && stageIndex >= 0 && stageIndex < currentIndex;
+}
+
 function normalizedMaintenanceStatus(request: MaintenanceRequest) {
   if (!request.contractorId && ['Submitted', 'Triage', 'Under Review', 'Open'].includes(request.status)) return 'New Request';
   if (request.status === 'Scheduled') return 'Assigned';
   if (request.status === 'Completed') return 'Complete';
   return request.status;
+}
+
+function isMaintenanceDone(request: MaintenanceRequest) {
+  return ['Complete', 'Completed', 'Closed', 'Resident Notified', 'Rejected'].includes(normalizedMaintenanceStatus(request));
 }
 
 function maintenanceWorkflowLabel(request: MaintenanceRequest) {
@@ -3415,15 +3509,16 @@ function residentMaintenanceStep(request: MaintenanceRequest): MaintenanceNextSt
 }
 
 function MaintenanceWorkflowSummary({ requests }: { requests: MaintenanceRequest[] }) {
-  const steps = ['New Request', 'Assigned', 'Accepted', 'In Progress', 'Complete', 'Resident Notified'];
   return (
-    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
-      {steps.map((step) => (
-        <article className="rounded-2xl border border-line bg-white p-4 shadow-soft" key={step}>
-          <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">{step}</p>
-          <p className="mt-2 text-2xl font-semibold">{requests.filter((request) => normalizedMaintenanceStatus(request) === step).length}</p>
-        </article>
+    <div className="rounded-3xl border border-line bg-white p-3 shadow-soft">
+      <div className="grid gap-2 sm:grid-cols-3 xl:grid-cols-6">
+        {maintenanceStageLabels.map((step) => (
+          <div className="rounded-2xl bg-slate-50 px-3 py-3" key={step}>
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">{step}</p>
+            <p className="mt-1 text-xl font-semibold">{requests.filter((request) => normalizedMaintenanceStatus(request) === step).length}</p>
+          </div>
       ))}
+      </div>
     </div>
   );
 }
