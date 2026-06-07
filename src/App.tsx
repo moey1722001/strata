@@ -130,10 +130,10 @@ type FlowActions = {
   createBuilding: (payload: Record<string, string>) => Promise<void>;
   reportIssue: (payload?: Partial<ReportIssue> & { description?: string }) => Promise<void>;
   assignContractor: (id?: string, contractorId?: string) => Promise<void>;
-  updateMaintenanceStatus: (id: string, status: string, note?: string) => Promise<void>;
+  updateMaintenanceStatus: (id: string, status: string, note?: string, communication?: MaintenanceCommunicationChoice) => Promise<void>;
   updateIssueStatus: (id: string, status: string) => Promise<void>;
   notifyResident: (id: string) => Promise<void>;
-  contractorUpdate: (id?: string, status?: string, note?: string) => Promise<void>;
+  contractorUpdate: (id?: string, status?: string, note?: string, communication?: MaintenanceCommunicationChoice) => Promise<void>;
   createNotice: (payload?: Partial<Notice>) => Promise<void>;
   publishNotice: (id: string) => Promise<void>;
   sendMessage: (payload?: Partial<SimpleRecord>) => Promise<void>;
@@ -166,6 +166,12 @@ type FormKind =
   | 'inviteContractor'
   | 'updateJobStatus'
   | 'voteMotion';
+
+type MaintenanceCommunicationChoice = {
+  audience?: 'lot' | 'building';
+  noticeTitle?: string;
+  noticeBody?: string;
+};
 
 type FormContext = {
   id?: string;
@@ -321,10 +327,10 @@ function App() {
     createBuilding: (payload: Record<string, string>) => runAction(() => createBuilding(currentAccount, payload)),
     reportIssue: (payload?: Partial<ReportIssue>) => runAction(() => createResidentIssue(currentAccount, payload)),
     assignContractor: (id?: string, contractorId?: string) => runAction(() => assignContractorToFirstJob(currentAccount, id, contractorId)),
-    updateMaintenanceStatus: (id: string, status: string, note?: string) => runAction(() => updateMaintenanceRequestStatus(currentAccount, id, status, note)),
+    updateMaintenanceStatus: (id: string, status: string, note?: string, communication?: MaintenanceCommunicationChoice) => runAction(() => updateMaintenanceRequestStatus(currentAccount, id, status, note, communication)),
     updateIssueStatus: (id: string, status: string) => runAction(() => updateReportIssueStatus(currentAccount, id, status)),
     notifyResident: (id: string) => runAction(() => updateReportIssueStatus(currentAccount, id, 'Under Review')),
-    contractorUpdate: (id?: string, status = 'In Progress', note?: string) => runAction(() => addContractorUpdate(currentAccount, id, status, note)),
+    contractorUpdate: (id?: string, status = 'In Progress', note?: string, communication?: MaintenanceCommunicationChoice) => runAction(() => addContractorUpdate(currentAccount, id, status, note, communication)),
     createNotice: (payload?: Partial<Notice>) => runAction(() => createNotice(currentAccount, payload)),
     publishNotice: (id: string) => runAction(() => publishNotice(currentAccount, id)),
     sendMessage: (payload?: Partial<SimpleRecord>) => runAction(() => sendResidentMessage(currentAccount, payload)),
@@ -404,10 +410,15 @@ function App() {
       await flowActions.inviteContractor(targetId);
     }
     if (activeForm.kind === 'updateJobStatus' && targetId) {
+      const communication: MaintenanceCommunicationChoice = {
+        audience: field('audience') === 'All residents - publish notice' ? 'building' : 'lot',
+        noticeTitle: field('noticeTitle'),
+        noticeBody: field('noticeBody')
+      };
       if (role === 'contractor') {
-        await flowActions.contractorUpdate(targetId, field('status'), field('note'));
+        await flowActions.contractorUpdate(targetId, field('status'), field('note'), communication);
       } else {
-        await flowActions.updateMaintenanceStatus(targetId, field('status'), field('note'));
+        await flowActions.updateMaintenanceStatus(targetId, field('status'), field('note'), communication);
       }
     }
     if (activeForm.kind === 'voteMotion') {
@@ -2564,7 +2575,7 @@ function SettingsEditModal({
           </button>
         </div>
         <div className="mt-6 grid gap-4 sm:grid-cols-2">
-          {config.fields.map((field) => (
+          {config.fields.filter((field) => !field.visibleWhen || field.visibleWhen(formValues)).map((field) => (
             <label className={field.type === 'textarea' ? 'sm:col-span-2' : ''} key={field.name}>
               <span className="text-sm font-medium text-slate-600">{field.label}</span>
               {field.type === 'textarea' ? (
@@ -2876,7 +2887,7 @@ function WorkflowModal({
           </button>
         </div>
         <div className="mt-6 grid gap-4">
-          {config.fields.map((field) => (
+          {config.fields.filter((field) => !field.visibleWhen || field.visibleWhen(formValues)).map((field) => (
             <label key={field.name}>
               <span className="text-sm font-medium text-slate-600">{field.label}</span>
               {field.type === 'textarea' ? (
@@ -2916,6 +2927,7 @@ type FormField = {
   type?: 'text' | 'textarea' | 'file' | 'date' | 'time' | 'number';
   required?: boolean;
   options?: string[];
+  visibleWhen?: (values: Record<string, string>) => boolean;
 };
 
 function formConfig(kind: FormKind, role: Role, context: FormContext | undefined, data: MvpData, buildingConfig: BuildingConfiguration): { title: string; copy: string; submitLabel: string; defaults: Record<string, string>; fields: FormField[] } {
@@ -3087,12 +3099,21 @@ function formConfig(kind: FormKind, role: Role, context: FormContext | undefined
     },
     updateJobStatus: {
       title: 'Update job status',
-      copy: `Updates ${recordTitle} and posts a visible progress message.`,
+      copy: `Update ${recordTitle}. Choose whether this is a private lot update or a building-wide disruption notice.`,
       submitLabel: 'Save update',
-      defaults: { status: context?.status ?? 'In Progress', note: defaultMaintenanceNote(context?.status) },
+      defaults: {
+        status: context?.status ?? 'In Progress',
+        audience: 'Lot owner only',
+        note: defaultMaintenanceNote(context?.status),
+        noticeTitle: `${recordTitle}: ${context?.status ?? 'Maintenance update'}`,
+        noticeBody: defaultBuildingNoticeBody(recordTitle, context?.status)
+      },
       fields: [
         { name: 'status', label: 'Status', options: ['Accepted', 'In Progress', 'Complete', 'Resident Notified'], required: true },
-        { name: 'note', label: 'Progress note', type: 'textarea', required: true }
+        { name: 'audience', label: 'Who needs to know?', options: ['Lot owner only', 'All residents - publish notice'], required: true },
+        { name: 'note', label: 'Lot owner update', type: 'textarea', required: true },
+        { name: 'noticeTitle', label: 'Building notice title', required: false, visibleWhen: (values) => values.audience === 'All residents - publish notice' },
+        { name: 'noticeBody', label: 'Building notice body', type: 'textarea', required: false, visibleWhen: (values) => values.audience === 'All residents - publish notice' }
       ]
     },
     voteMotion: {
@@ -3610,10 +3631,17 @@ function dataContractorByName(contractorList: Contractor[], name: string) {
 
 function defaultMaintenanceNote(status?: string) {
   if (status === 'Accepted') return 'Contractor accepted the job and will coordinate attendance.';
-  if (status === 'In Progress') return 'Work has started and the resident timeline has been updated.';
+  if (status === 'In Progress') return 'Work has started. Atlas has updated the request timeline.';
   if (status === 'Complete') return 'Contractor marked the work complete.';
   if (status === 'Resident Notified') return 'Resident notified that the request has been completed.';
   return '';
+}
+
+function defaultBuildingNoticeBody(recordTitle: string, status?: string) {
+  if (status === 'In Progress') return `${recordTitle} is now in progress. There may be temporary noise, access changes or disruption while works are underway. We will update residents when the work is complete.`;
+  if (status === 'Complete') return `${recordTitle} has been completed. Thank you for your patience while these works were carried out.`;
+  if (status === 'Accepted') return `${recordTitle} has been accepted by the contractor. Residents will be updated before any building-wide disruption.`;
+  return `${recordTitle} has been updated. Please review this notice for the latest building maintenance information.`;
 }
 
 function nextDateValue() {

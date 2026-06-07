@@ -29,6 +29,12 @@ export type MvpActionResult =
   | { ok: true; message: string }
   | { ok: false; message: string };
 
+type MaintenanceCommunication = {
+  audience?: 'lot' | 'building';
+  noticeTitle?: string;
+  noticeBody?: string;
+};
+
 const emptyData: MvpData = {
   buildings: [],
   notices: [],
@@ -213,7 +219,7 @@ export async function loadMvpData(account: TestAccount | null, role: Role): Prom
       );
     }),
     contractorUpdates: contractorUpdates.map(mapContractorUpdate),
-    messages: (messageRows.data ?? []).map((row) => mapMessage(row, user.id)),
+    messages: (messageRows.data ?? []).filter((row) => row.channel !== 'maintenance-update').map((row) => mapMessage(row, user.id)),
     documents: documentRecords,
     notifications: (notificationRows.data ?? []).map((row) => mapSimple(row, row.title, row.event_type)),
     auditLogs: (auditRows.data ?? []).map((row) => mapSimple(row, row.action, row.entity_type)),
@@ -249,7 +255,7 @@ async function loadContractorMvpData(account: TestAccount, userId: string): Prom
       status: row.status
     }, row, (jobUpdates.data ?? []).filter((update) => update.work_order_id === row.id))),
     contractorUpdates: (jobUpdates.data ?? []).map(mapContractorUpdate),
-    messages: (messagesForContractor.data ?? []).map((row) => mapMessage(row, userId)),
+    messages: (messagesForContractor.data ?? []).filter((row) => row.channel !== 'maintenance-update').map((row) => mapMessage(row, userId)),
     documents: (documentsForContractor.data ?? []).map((row) => ({
       id: row.id,
       title: row.document_type,
@@ -504,7 +510,7 @@ export async function updateReportIssueStatus(account: TestAccount | null, id: s
   return { ok: true, message: 'Issue status saved in Supabase.' };
 }
 
-export async function updateMaintenanceRequestStatus(account: TestAccount | null, id: string, status: string, note?: string): Promise<MvpActionResult> {
+export async function updateMaintenanceRequestStatus(account: TestAccount | null, id: string, status: string, note?: string, communication: MaintenanceCommunication = {}): Promise<MvpActionResult> {
   const context = await requireUserContext(account);
   if (!context.ok) return context;
   const { user } = context;
@@ -518,25 +524,26 @@ export async function updateMaintenanceRequestStatus(account: TestAccount | null
   if (status === 'Complete' || status === 'Completed') workOrderPatch.completed_at = new Date().toISOString();
   await supabase!.from('work_orders').update(workOrderPatch).eq('maintenance_request_id', resolvedId);
 
+  const notificationBody = note ?? `Status changed to ${status}.`;
   if (maintenance.data.resident_id) {
-    await supabase!.from('messages').insert({
-      company_id: maintenance.data.company_id,
-      building_id: maintenance.data.building_id,
-      sender_id: user.id,
-      recipient_id: maintenance.data.resident_id,
-      channel: 'maintenance-update',
-      subject: `Manager update: ${status}`,
-      body: note ?? `Status changed to ${status}.`,
-      linked_entity_type: 'maintenance_requests',
-      linked_entity_id: resolvedId
+    await insertNotification(maintenance.data.company_id, maintenance.data.building_id, maintenance.data.resident_id, 'maintenance_update', `Maintenance ${status}`, notificationBody);
+  }
+  if (communication.audience === 'building') {
+    await createMaintenanceNotice({
+      companyId: maintenance.data.company_id,
+      buildingId: maintenance.data.building_id,
+      createdBy: user.id,
+      requestTitle: maintenance.data.title,
+      status,
+      title: communication.noticeTitle,
+      body: communication.noticeBody || notificationBody
     });
-    await insertNotification(maintenance.data.company_id, maintenance.data.building_id, maintenance.data.resident_id, 'maintenance_update', 'Maintenance update', note ?? `Status changed to ${status}.`);
   }
   await insertAudit(maintenance.data.company_id, maintenance.data.building_id, user.id, 'UPDATE_MAINTENANCE_STATUS', 'maintenance_requests', resolvedId);
-  return { ok: true, message: 'Maintenance status saved in Supabase.' };
+  return { ok: true, message: communication.audience === 'building' ? 'Status saved and building notice published.' : 'Status saved and lot owner notified.' };
 }
 
-export async function addContractorUpdate(account: TestAccount | null, maintenanceRequestId?: string, status = 'In Progress', note?: string): Promise<MvpActionResult> {
+export async function addContractorUpdate(account: TestAccount | null, maintenanceRequestId?: string, status = 'In Progress', note?: string, communication: MaintenanceCommunication = {}): Promise<MvpActionResult> {
   if (!supabase || !account) return { ok: false, message: 'Supabase account is required.' };
   const contractor = await supabase.from('contractors').select('id, company_id').eq('email', account.email).maybeSingle();
   if (!contractor.data) return { ok: false, message: 'Contractor profile not found.' };
@@ -562,9 +569,21 @@ export async function addContractorUpdate(account: TestAccount | null, maintenan
   await supabase.from('maintenance_requests').update({ status }).eq('id', workOrder.data.maintenance_request_id);
   await notifyManager(workOrder.data.company_id, workOrder.data.building_id, 'contractor_update', 'Contractor updated job', note ?? status);
   const residentId = workOrder.data.maintenance_requests?.resident_id;
-  if (residentId) await insertNotification(workOrder.data.company_id, workOrder.data.building_id, residentId, 'contractor_update', 'Maintenance update', note ?? status);
+  if (residentId) await insertNotification(workOrder.data.company_id, workOrder.data.building_id, residentId, 'contractor_update', `Maintenance ${status}`, note ?? status);
+  if (communication.audience === 'building') {
+    const user = await findUserByEmail(account.email);
+    await createMaintenanceNotice({
+      companyId: workOrder.data.company_id,
+      buildingId: workOrder.data.building_id,
+      createdBy: user?.id ?? null,
+      requestTitle: workOrder.data.maintenance_requests?.title ?? 'Maintenance works',
+      status,
+      title: communication.noticeTitle,
+      body: communication.noticeBody || note || status
+    });
+  }
   await insertAudit(workOrder.data.company_id, workOrder.data.building_id, null, 'CONTRACTOR_UPDATE', 'contractor_job_updates', update.data.id);
-  return { ok: true, message: 'Contractor update saved in Supabase.' };
+  return { ok: true, message: communication.audience === 'building' ? 'Contractor update saved and building notice published.' : 'Contractor update saved and lot owner notified.' };
 }
 
 export async function saveContractor(account: TestAccount | null, payload: Record<string, string>, contractorId?: string): Promise<MvpActionResult> {
@@ -935,6 +954,43 @@ async function notifyContractor(companyId: string, buildingId: string, contracto
   if (!contractor.data?.email) return;
   const user = await findUserByEmail(contractor.data.email);
   if (user) await insertNotification(companyId, buildingId, user.id, eventType, title, body);
+}
+
+async function createMaintenanceNotice({
+  companyId,
+  buildingId,
+  createdBy,
+  requestTitle,
+  status,
+  title,
+  body
+}: {
+  companyId: string;
+  buildingId: string;
+  createdBy: string | null;
+  requestTitle: string;
+  status: string;
+  title?: string;
+  body: string;
+}) {
+  if (!supabase) return;
+  const noticeTitle = title?.trim() || `${requestTitle}: ${status}`;
+  const notice = await supabase.from('notices').insert({
+    company_id: companyId,
+    building_id: buildingId,
+    created_by: createdBy,
+    title: noticeTitle,
+    body,
+    category: 'Maintenance update',
+    priority: status === 'In Progress' ? 'Medium' : 'Low',
+    target_audience: 'All residents',
+    notification_channels: ['in-app', 'email'],
+    publication_status: 'Published'
+  }).select('id').single();
+  if (!notice.error) {
+    await notifyRole(companyId, buildingId, 'resident', 'notice_created', 'Building maintenance update', noticeTitle);
+    await insertAudit(companyId, buildingId, createdBy, 'CREATE_MAINTENANCE_NOTICE', 'notices', notice.data.id);
+  }
 }
 
 async function insertNotification(companyId: string, buildingId: string, userId: string, eventType: string, title: string, body: string) {
