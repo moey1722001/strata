@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import type { ComponentProps, ElementType } from 'react';
 import {
@@ -1550,6 +1550,7 @@ function MessagesPage({ role, data, actions }: { role: Role; data: MvpData; acti
   const [draft, setDraft] = useState('');
   const activeConversation = conversations.find((conversation) => conversation.participant.id === activeParticipantId);
   const activeParticipant = activeConversation?.participant ?? availableParticipants.find((participant) => participant.id === activeParticipantId);
+  const threadTitle = activeConversation?.messages[0]?.title ?? `Conversation with ${activeParticipant?.name ?? 'contact'}`;
   const filteredConversations = conversations.filter((conversation) => `${conversation.participant.name} ${conversation.participant.unit ?? ''} ${conversation.participant.detail ?? ''}`.toLowerCase().includes(search.toLowerCase()));
   const relatedRequests = activeParticipant
     ? data.maintenanceRequests.filter((request) => request.resident === activeParticipant.name || request.contractorId === activeParticipant.id)
@@ -1572,10 +1573,10 @@ function MessagesPage({ role, data, actions }: { role: Role; data: MvpData; acti
   }
 
   return (
-    <div className="space-y-5">
+    <div className="flex min-h-0 flex-col space-y-5">
       <SectionHeader eyebrow="Messages" title={role === 'manager' ? 'Inbox' : 'Conversations'} />
-      <div className="grid min-h-[680px] overflow-hidden rounded-3xl border border-line bg-white shadow-soft lg:grid-cols-[310px_minmax(0,1fr)_300px]">
-        <aside className="border-b border-line lg:border-b-0 lg:border-r">
+      <div className="grid h-[calc(100vh-180px)] min-h-[620px] overflow-hidden rounded-3xl border border-line bg-white shadow-soft lg:grid-cols-[310px_minmax(0,1fr)_300px]">
+        <aside className="flex min-h-0 flex-col border-b border-line lg:border-b-0 lg:border-r">
           <div className="border-b border-line p-4">
             <label className="flex items-center gap-2 rounded-xl bg-slate-50 px-3 py-2">
               <Search size={16} className="text-slate-400" />
@@ -1588,7 +1589,7 @@ function MessagesPage({ role, data, actions }: { role: Role; data: MvpData; acti
               </select>
             )}
           </div>
-          <div className="max-h-[590px] overflow-y-auto">
+          <div className="min-h-0 flex-1 overflow-y-auto">
             {filteredConversations.length ? filteredConversations.map((conversation) => (
               <button className={`w-full border-b border-line p-4 text-left ${activeParticipantId === conversation.participant.id ? 'bg-blue-50' : 'hover:bg-slate-50'}`} key={conversation.participant.id} onClick={() => setActiveParticipantId(conversation.participant.id)}>
                 <div className="flex items-start justify-between gap-3">
@@ -1605,19 +1606,31 @@ function MessagesPage({ role, data, actions }: { role: Role; data: MvpData; acti
           </div>
         </aside>
 
-        <section className="flex min-h-[520px] flex-col">
+        <section className="flex min-h-0 flex-col bg-white">
           {activeParticipant ? (
             <>
-              <div className="border-b border-line px-5 py-4">
-                <h2 className="font-semibold">{activeParticipant.name}</h2>
-                <p className="mt-1 text-sm text-slate-500">{buildingName(activeParticipant.buildingId)} · {activeParticipant.unit ? `Lot ${activeParticipant.unit} · ` : ''}{roleLabels[activeParticipant.role]}</p>
+              <div className="shrink-0 border-b border-line px-5 py-4">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <h2 className="truncate font-semibold">{activeParticipant.name}</h2>
+                    <p className="mt-1 truncate text-sm text-slate-500">{buildingName(activeParticipant.buildingId)} · {activeParticipant.unit ? `Lot ${activeParticipant.unit} · ` : ''}{roleLabels[activeParticipant.role]}</p>
+                  </div>
+                  {activeConversation?.unread ? <span className="rounded-full bg-primary px-2.5 py-1 text-xs font-semibold text-white">{activeConversation.unread} unread</span> : null}
+                </div>
+                <p className="mt-3 truncate text-sm font-medium text-slate-700">{threadTitle}</p>
               </div>
-              <div className="flex-1 overflow-y-auto p-5">
+              <div className="min-h-0 flex-1 overflow-y-auto bg-slate-50/50 p-5">
                 <MessageThread records={activeConversation?.messages ?? []} accountName={accountName} />
               </div>
-              <div className="border-t border-line p-4">
-                <textarea className="min-h-24 w-full resize-none rounded-2xl border border-line px-4 py-3 text-sm outline-none focus:border-harbour" placeholder={`Message ${activeParticipant.name}`} value={draft} onChange={(event) => setDraft(event.target.value)} />
-                <div className="mt-3 flex justify-end">
+              <div className="shrink-0 border-t border-line bg-white p-4">
+                <textarea
+                  className="max-h-36 min-h-16 w-full resize-none rounded-2xl border border-line px-4 py-3 text-sm outline-none focus:border-harbour"
+                  placeholder={`Message ${activeParticipant.name}`}
+                  value={draft}
+                  onChange={(event) => setDraft(event.target.value)}
+                />
+                <div className="mt-3 flex items-center justify-between gap-3">
+                  <p className="text-xs text-slate-400">Messages are saved to this conversation.</p>
                   <button className="btn-primary" disabled={!draft.trim()} onClick={() => void sendThreadMessage()}><MessageSquare size={16} /> Send</button>
                 </div>
               </div>
@@ -1625,7 +1638,7 @@ function MessagesPage({ role, data, actions }: { role: Role; data: MvpData; acti
           ) : <EmptyState title="Select a conversation" copy="Choose someone from the inbox to view their message history." />}
         </section>
 
-        <aside className="border-t border-line p-5 lg:border-l lg:border-t-0">
+        <aside className="min-h-0 overflow-y-auto border-t border-line p-5 lg:border-l lg:border-t-0">
           {activeParticipant ? (
             <div className="space-y-6">
               <div>
@@ -1684,28 +1697,41 @@ function DocumentsPage({ role, data, actions }: { role: Role; data: MvpData; act
 }
 
 function MessageThread({ records, accountName }: { records: SimpleRecord[]; accountName: string }) {
+  const endRef = useRef<HTMLDivElement | null>(null);
+  const sortedRecords = useMemo(() => [...records].sort((a, b) => recordTime(a.due) - recordTime(b.due)), [records]);
+  const latestMessageId = sortedRecords[sortedRecords.length - 1]?.id;
+
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ block: 'end' });
+  }, [sortedRecords.length, latestMessageId]);
+
   if (!records.length) {
     return <EmptyState title="No messages yet" copy="Start a conversation and replies will remain here after refresh." />;
   }
 
   return (
-    <div className="space-y-4">
-      {[...records].sort((a, b) => recordTime(a.due) - recordTime(b.due)).map((message) => {
+    <div className="flex min-h-full flex-col justify-end gap-3">
+      {sortedRecords.map((message, index) => {
         const isOwnMessage = message.owner === accountName;
+        const previous = sortedRecords[index - 1];
+        const startsGroup = !previous || previous.owner !== message.owner || recordTime(message.due) - recordTime(previous.due) > 12 * 60 * 1000;
+        const messageText = message.meta?.trim() || message.title;
         return (
-          <article className={`flex ${isOwnMessage ? 'justify-end' : 'justify-start'}`} key={message.id}>
-            <div className={`max-w-[88%] rounded-2xl px-4 py-3 sm:max-w-[72%] ${isOwnMessage ? 'bg-primary text-white' : 'border border-line bg-slate-50 text-ink'}`}>
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <p className={`text-xs font-semibold ${isOwnMessage ? 'text-white/75' : 'text-slate-500'}`}>{isOwnMessage ? 'You' : message.owner}</p>
-                {message.status === 'Unread' && !isOwnMessage && <span className="rounded-full bg-red-100 px-2 py-0.5 text-[11px] font-semibold text-red-700">Unread</span>}
-              </div>
-              <p className="mt-1 font-semibold">{message.title}</p>
-              <p className={`mt-2 text-sm leading-6 ${isOwnMessage ? 'text-white/90' : 'text-slate-600'}`}>{message.meta}</p>
-              <p className={`mt-2 text-xs ${isOwnMessage ? 'text-white/65' : 'text-slate-400'}`}>{formatDateTime(message.due)}</p>
+          <article className={`flex ${isOwnMessage ? 'justify-end' : 'justify-start'} ${startsGroup ? 'mt-3' : ''}`} key={message.id}>
+            <div className={`max-w-[86%] rounded-2xl px-4 py-2.5 text-sm shadow-sm sm:max-w-[68%] ${isOwnMessage ? 'rounded-br-md bg-primary text-white' : 'rounded-bl-md border border-line bg-white text-ink'}`}>
+              {startsGroup && (
+                <div className="mb-1.5 flex flex-wrap items-center justify-between gap-3">
+                  <p className={`text-xs font-semibold ${isOwnMessage ? 'text-white/75' : 'text-slate-500'}`}>{isOwnMessage ? 'You' : message.owner}</p>
+                  {message.status === 'Unread' && !isOwnMessage && <span className="rounded-full bg-red-100 px-2 py-0.5 text-[11px] font-semibold text-red-700">Unread</span>}
+                </div>
+              )}
+              <p className={`whitespace-pre-wrap leading-6 ${isOwnMessage ? 'text-white/90' : 'text-slate-700'}`}>{messageText}</p>
+              <p className={`mt-1.5 text-[11px] ${isOwnMessage ? 'text-white/60' : 'text-slate-400'}`}>{formatDateTime(message.due)}</p>
             </div>
           </article>
         );
       })}
+      <div ref={endRef} />
     </div>
   );
 }
