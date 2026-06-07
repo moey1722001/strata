@@ -1807,15 +1807,50 @@ function FacilitiesPage({ role, data, actions, buildingConfig, onNavigate }: { r
   const residentCanBook = facilities.length > 0;
   const [selectedFacility, setSelectedFacility] = useState(facilities[0]?.name ?? '');
   const [calendarStart, setCalendarStart] = useState(startOfDay(new Date()));
+  const [activeFacilityForm, setActiveFacilityForm] = useState<ActiveSettingForm | null>(null);
   const calendarDays = Array.from({ length: 14 }, (_, index) => new Date(calendarStart.getTime() + index * 86400000));
   const managerView = role === 'manager' || role === 'portfolio_admin' || role === 'super_admin';
+
+  async function saveFacilityConfig(nextConfig: BuildingConfiguration, action: string) {
+    await actions.saveBuildingConfig(nextConfig, action);
+    setActiveFacilityForm(null);
+  }
+
+  async function submitFacilityForm(kind: SettingFormKind, values: Record<string, string>, id?: string) {
+    if (kind !== 'facility') return;
+    const facility = {
+      id: id ?? createConfigId(buildingConfig.buildingId, 'facility'),
+      name: values.name,
+      description: values.description,
+      location: values.location,
+      availability: values.availability,
+      maxBookingLength: values.maxBookingLength,
+      advanceNotice: values.advanceNotice,
+      approvalRequired: values.approvalRequired === 'Yes',
+      feePlaceholder: values.feePlaceholder,
+      capacity: Number(values.capacity) || 1,
+      rules: values.rules,
+      visibility: values.visibility as BuildingConfiguration['facilities'][number]['visibility'],
+      status: values.status as BuildingConfiguration['facilities'][number]['status']
+    };
+    const nextFacilities = id ? buildingConfig.facilities.map((item) => item.id === id ? facility : item) : [facility, ...buildingConfig.facilities];
+    await saveFacilityConfig({ ...buildingConfig, facilities: nextFacilities }, id ? 'UPDATE_BUILDING_FACILITY' : 'ADD_BUILDING_FACILITY');
+  }
+
+  async function toggleFacility(facility: BuildingConfiguration['facilities'][number]) {
+    await saveFacilityConfig({
+      ...buildingConfig,
+      facilities: buildingConfig.facilities.map((item) => item.id === facility.id ? { ...item, status: item.status === 'active' ? 'inactive' : 'active' } : item)
+    }, 'TOGGLE_BUILDING_FACILITY');
+  }
+
   return (
     <div className="space-y-6">
       <SectionHeader
         eyebrow="Facilities"
         title={managerView ? 'Booking calendar' : 'Book a building facility'}
         action={managerView
-          ? <div className="flex flex-wrap gap-2"><button className="btn-secondary" onClick={() => onNavigate('building_settings')}>Manage facilities</button><button className="btn-primary" onClick={() => actions.openForm('blockFacility')}><CalendarDays size={17} /> Block time</button></div>
+          ? <div className="flex flex-wrap gap-2"><button className="btn-secondary" onClick={() => setActiveFacilityForm({ kind: 'facility' })}><Plus size={17} /> Add facility</button><button className="btn-primary" onClick={() => actions.openForm('blockFacility')}><CalendarDays size={17} /> Block time</button></div>
           : residentCanBook ? <button className="btn-primary" onClick={() => actions.openForm('bookFacility')}><Plus size={17} /> New booking</button> : undefined}
       />
       {(role === 'resident' || role === 'committee') && (
@@ -1867,6 +1902,35 @@ function FacilitiesPage({ role, data, actions, buildingConfig, onNavigate }: { r
       )}
       {managerView && (
         <>
+          <Panel title="Facilities">
+            {buildingConfig.facilities.length ? (
+              <div className="grid gap-4 lg:grid-cols-2">
+                {buildingConfig.facilities.map((facility) => (
+                  <article className="rounded-2xl border border-line p-4" key={facility.id}>
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <h3 className="font-semibold">{facility.name}</h3>
+                        <p className="mt-1 text-sm text-slate-500">{facility.location} · {facility.availability}</p>
+                      </div>
+                      <Badge label={facility.status} />
+                    </div>
+                    <p className="mt-3 text-sm leading-6 text-slate-600">{facility.description}</p>
+                    <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                      <MiniStat label="Approval" value={facility.approvalRequired ? 'Required' : 'Instant'} />
+                      <MiniStat label="Deposit" value={facility.feePlaceholder || 'No fee'} />
+                      <MiniStat label="Guests" value={String(facility.capacity)} />
+                    </div>
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      <button className="btn-secondary" onClick={() => setActiveFacilityForm({ kind: 'facility', id: facility.id })}>Edit</button>
+                      <button className="btn-secondary" onClick={() => void toggleFacility(facility)}>{facility.status === 'active' ? 'Deactivate' : 'Activate'}</button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <EmptyState title="No facilities configured" copy="Add the first bookable facility for this building." />
+            )}
+          </Panel>
           <Panel title="Building calendar" action={<div className="flex gap-2"><button className="btn-secondary" onClick={() => setCalendarStart(new Date(calendarStart.getTime() - 7 * 86400000))}>Previous</button><button className="btn-secondary" onClick={() => setCalendarStart(new Date(calendarStart.getTime() + 7 * 86400000))}>Next</button></div>}>
             <FacilityCalendar days={calendarDays} bookings={records} manager />
           </Panel>
@@ -1893,6 +1957,12 @@ function FacilitiesPage({ role, data, actions, buildingConfig, onNavigate }: { r
           </Panel>
         </>
       )}
+      <SettingsEditModal
+        activeForm={activeFacilityForm}
+        buildingConfig={buildingConfig}
+        onClose={() => setActiveFacilityForm(null)}
+        onSubmit={submitFacilityForm}
+      />
     </div>
   );
 }
