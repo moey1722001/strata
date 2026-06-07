@@ -58,12 +58,13 @@ import {
   staff,
   testAccounts
 } from './data';
-import type { BuildingConfiguration, BuildingContact, Contractor, LevyRecord, MaintenanceRequest, Notice, PageId, Priority, Project, ReportIssue, Role, SimpleRecord, TestAccount } from './data';
+import type { BuildingConfiguration, BuildingContact, Contractor, ConversationParticipant, LevyRecord, MaintenanceRequest, Notice, PageId, Priority, Project, ReportIssue, Role, SimpleRecord, TestAccount } from './data';
 import { AtlasLogo, AtlasMark } from './brand';
 import {
   addContractorUpdate,
   archiveContractor,
   assignContractorToFirstJob,
+  blockFacilityTime,
   bookFacility,
   createBuilding,
   createNotice,
@@ -86,6 +87,7 @@ import {
   voteOnMotion
 } from './lib/mvpRepository';
 import type { MvpActionResult, MvpData } from './lib/mvpRepository';
+import { supabase } from './lib/supabase';
 
 const priorityClasses: Record<Priority, string> = {
   Emergency: 'bg-red-50 text-red-700 ring-red-200',
@@ -100,6 +102,8 @@ const statusClasses: Record<string, string> = {
   Scheduled: 'bg-indigo-50 text-indigo-700 ring-indigo-200',
   Approved: 'bg-emerald-50 text-emerald-700 ring-emerald-200',
   Rejected: 'bg-red-50 text-red-700 ring-red-200',
+  Cancelled: 'bg-slate-100 text-slate-700 ring-slate-200',
+  Blocked: 'bg-slate-900 text-white ring-slate-900',
   Closed: 'bg-slate-900 text-white ring-slate-900',
   Completed: 'bg-emerald-50 text-emerald-700 ring-emerald-200',
   Overdue: 'bg-red-50 text-red-700 ring-red-200',
@@ -136,6 +140,7 @@ type FlowActions = {
   uploadDocument: (payload?: Partial<SimpleRecord> & { file?: File }) => Promise<void>;
   vote: (payload?: Partial<SimpleRecord>) => Promise<void>;
   bookFacility: (payload?: Partial<SimpleRecord>) => Promise<void>;
+  blockFacility: (payload: Partial<SimpleRecord>) => Promise<void>;
   submitRenovation: (payload?: Partial<SimpleRecord>) => Promise<void>;
   approveRenovation: (id: string) => Promise<void>;
   requestRenovationInfo: (id: string) => Promise<void>;
@@ -154,6 +159,7 @@ type FormKind =
   | 'uploadDocument'
   | 'reportIssue'
   | 'bookFacility'
+  | 'blockFacility'
   | 'submitRenovation'
   | 'assignContractor'
   | 'upsertContractor'
@@ -184,6 +190,7 @@ function App() {
     reportIssues: [],
     maintenanceRequests: [],
     contractors,
+    participants: [],
     contractorUpdates: [],
     messages: [],
     documents: [],
@@ -219,7 +226,7 @@ function App() {
       portfolio_admin: 'portfolio',
       manager: 'portfolio',
       resident: 'resident',
-      committee: 'committee',
+      committee: 'resident',
       contractor: 'contractor'
     };
     return defaultPageByRole[nextRole];
@@ -262,6 +269,23 @@ function App() {
       active = false;
     };
   }, [page, currentAccount, role]);
+
+  useEffect(() => {
+    if (!supabase || !currentAccount) return;
+    const client = supabase;
+    const channel = client
+      .channel(`atlas-live-${currentAccount.id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'messages' }, async () => {
+        setMvpData(await loadMvpData(currentAccount, role));
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'facility_bookings' }, async () => {
+        setMvpData(await loadMvpData(currentAccount, role));
+      })
+      .subscribe();
+    return () => {
+      void client.removeChannel(channel);
+    };
+  }, [currentAccount, role]);
 
   async function loginAs(account: TestAccount) {
     const result = await signInTestAccount(account);
@@ -307,6 +331,7 @@ function App() {
     uploadDocument: (payload?: Partial<SimpleRecord> & { file?: File }) => runAction(() => uploadDocument(currentAccount, payload)),
     vote: (payload?: Partial<SimpleRecord>) => runAction(() => voteOnMotion(currentAccount, payload)),
     bookFacility: (payload?: Partial<SimpleRecord>) => runAction(() => bookFacility(currentAccount, payload)),
+    blockFacility: (payload: Partial<SimpleRecord>) => runAction(() => blockFacilityTime(currentAccount, payload)),
     submitRenovation: (payload?: Partial<SimpleRecord>) => runAction(() => submitRenovation(currentAccount, payload)),
     approveRenovation: (id: string) => runAction(() => updateRenovationStatus(currentAccount, id, 'Approved', 'Approved with standard noise conditions')),
     requestRenovationInfo: (id: string) => runAction(() => updateRenovationStatus(currentAccount, id, 'More Info Required', 'Acoustic certificate and contractor insurance requested')),
@@ -348,7 +373,17 @@ function App() {
       await flowActions.reportIssue({ title: field('title'), category: field('category') as ReportIssue['category'], severity: field('severity') as Priority, description: field('description') });
     }
     if (activeForm.kind === 'bookFacility') {
-      await flowActions.bookFacility({ title: field('title'), due: field('date'), meta: field('notes') });
+      const startsAt = new Date(`${field('date')}T${field('startTime')}:00`).toISOString();
+      const duration = Number(field('duration')) || 1;
+      const endsAt = new Date(new Date(startsAt).getTime() + duration * 60 * 60 * 1000).toISOString();
+      const facility = activeFacilities(buildingConfig).find((item) => item.name === field('title'));
+      await flowActions.bookFacility({ title: field('title'), startsAt, endsAt, guests: Number(field('guests')) || 1, amount: Number((facility?.feePlaceholder ?? '').replace(/[^0-9.]/g, '')) || 0, meta: field('notes') });
+    }
+    if (activeForm.kind === 'blockFacility') {
+      const startsAt = new Date(`${field('date')}T${field('startTime')}:00`).toISOString();
+      const duration = Number(field('duration')) || 1;
+      const endsAt = new Date(new Date(startsAt).getTime() + duration * 60 * 60 * 1000).toISOString();
+      await flowActions.blockFacility({ title: field('title'), startsAt, endsAt, meta: field('notes') });
     }
     if (activeForm.kind === 'submitRenovation') {
       await flowActions.submitRenovation({ title: field('title'), due: field('date'), meta: field('scope') });
@@ -664,7 +699,7 @@ function PageRouter({ page, role, onNavigate, data, actions, buildingConfig }: {
   if (page === 'documents') return <DocumentsPage role={role} data={data} actions={actions} />;
   if (page === 'maintenance') return <MaintenancePage role={role} data={data} actions={actions} />;
   if (page === 'projects') return <ProjectsPage role={role} />;
-  if (page === 'facilities') return <FacilitiesPage role={role} data={data} actions={actions} buildingConfig={buildingConfig} />;
+  if (page === 'facilities') return <FacilitiesPage role={role} data={data} actions={actions} buildingConfig={buildingConfig} onNavigate={onNavigate} />;
   if (page === 'renovations') return <RenovationsPage role={role} data={data} actions={actions} buildingConfig={buildingConfig} />;
   if (page === 'packages' && role === 'resident') return <PackagesPage role={role} data={data} buildingConfig={buildingConfig} />;
   if (page === 'incidents') return <IncidentsPage role={role} data={data} actions={actions} />;
@@ -1126,7 +1161,7 @@ function ResidentDashboard({ role, onNavigate, data, actions, buildingConfig }: 
 
   return (
     <div className="mx-auto max-w-5xl space-y-5">
-      <SectionHeader eyebrow="Resident home" title={buildingConfig.profile.name} action={<button className="btn-primary" onClick={() => actions.openForm('reportIssue')}><Plus size={17} /> Report issue</button>} />
+      <SectionHeader eyebrow="Resident home" title={buildingConfig.profile.name} action={<button className="btn-primary" onClick={() => actions.openForm('reportIssue')}><Plus size={17} /> New request</button>} />
       <div className="grid gap-5 lg:grid-cols-2">
         <Panel title="Latest notice" className="lg:col-span-2">
           {latestNotice ? (
@@ -1157,7 +1192,7 @@ function ResidentDashboard({ role, onNavigate, data, actions, buildingConfig }: 
                 </button>
               ))}
             </div>
-          ) : <ResidentEmpty copy="You have no open maintenance requests." action="Report an issue" onClick={() => actions.openForm('reportIssue')} />}
+          ) : <ResidentEmpty copy="You have no open maintenance requests." action="New request" onClick={() => actions.openForm('reportIssue')} />}
         </Panel>
 
         <Panel title="Messages" action={<button className="text-sm font-semibold text-harbour" onClick={() => actions.openForm('sendMessage')}>Message manager</button>}>
@@ -1221,29 +1256,35 @@ function ResidentEmpty({ copy, action, onClick }: { copy: string; action: string
 }
 
 function CommitteeDashboard({ role, onNavigate, data, actions }: { role: Role; onNavigate: (page: PageId) => void; data: MvpData; actions: FlowActions }) {
+  const committeeDocuments = data.documents.filter((document) => document.status === 'Committee only');
+  const upcomingMeetings = filterForRole(meetings, role).slice(0, 3);
+  const discussionMessages = data.messages.filter((message) => message.senderRole === 'committee' || message.recipientRole === 'committee').slice(0, 3);
   return (
-    <div className="space-y-6">
-      <SectionHeader eyebrow="Committee governance" title="Decisions, motions and financial oversight" action={<button className="btn-primary" onClick={() => onNavigate('documents')}><FileText size={17} /> Committee documents</button>} />
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <Metric title="Open motions" value={data.motions.length.toString()} detail="Votes and resolutions" icon={Vote} />
-        <Metric title="Quotes awaiting approval" value="3" detail="Major works" icon={DollarSign} tone="amber" />
-        <Metric title="Committee docs" value="12" detail="Restricted visibility" icon={FileText} tone="blue" />
-        <Metric title="Capital works" value={currency(680000)} detail="Budget under review" icon={ShieldCheck} tone="green" />
-      </div>
-      <div className="grid gap-5 xl:grid-cols-[1fr_0.8fr]">
-        <ModulePage title="Committee matters" eyebrow="Voting, expenditure approvals and digital resolutions" records={filterForRole([...data.motions, ...projects.map(projectToRecord), ...data.documents], role)} cta="Add committee item" compact />
-        <Panel title="Vote on motions">
+    <div className="mx-auto max-w-6xl space-y-6">
+      <SectionHeader eyebrow="Committee" title="Items requiring committee attention" />
+      <div className="grid gap-5 lg:grid-cols-2">
+        <Panel title="Votes requiring action">
           <div className="space-y-3">
-            {data.motions.map((motion) => (
+            {data.motions.length ? data.motions.map((motion) => (
               <div className="rounded-2xl border border-line p-4" key={motion.id}>
                 <h3 className="font-semibold">{motion.title}</h3>
                 <p className="mt-1 text-sm text-slate-500">{motion.meta}</p>
-                <div className="mt-4 flex gap-2">
-                  <button className="btn-secondary" onClick={() => actions.openForm('voteMotion', { id: motion.id, title: motion.title })}>Vote</button>
-                </div>
+                <button className="btn-primary mt-4" onClick={() => actions.openForm('voteMotion', { id: motion.id, title: motion.title })}>Review and vote</button>
               </div>
-            ))}
+            )) : <p className="py-5 text-sm text-slate-500">No votes require action.</p>}
           </div>
+        </Panel>
+        <Panel title="Pending approvals">
+          <RecordTable records={quoteRecords().filter((quote) => quote.buildingId === 'b1').slice(0, 2)} />
+        </Panel>
+        <Panel title="Upcoming meetings">
+          {upcomingMeetings.length ? <RecordTable records={upcomingMeetings} /> : <p className="py-5 text-sm text-slate-500">No meetings scheduled.</p>}
+        </Panel>
+        <Panel title="Committee documents" action={<button className="text-sm font-semibold text-harbour" onClick={() => onNavigate('documents')}>View documents</button>}>
+          {committeeDocuments.length ? <DocumentList records={committeeDocuments.slice(0, 4)} /> : <p className="py-5 text-sm text-slate-500">No committee-only documents available.</p>}
+        </Panel>
+        <Panel title="Recent committee discussion" className="lg:col-span-2" action={<button className="text-sm font-semibold text-harbour" onClick={() => onNavigate('messages')}>Open messages</button>}>
+          {discussionMessages.length ? <MessageThread records={discussionMessages} accountName={testAccounts.find((account) => account.role === role)?.name ?? ''} /> : <p className="py-5 text-sm text-slate-500">No committee discussion yet.</p>}
         </Panel>
       </div>
     </div>
@@ -1479,25 +1520,141 @@ function LevyManagementPage({ role }: { role: Role }) {
 }
 
 function MyRequestsPage({ role, data, actions }: { role: Role; data: MvpData; actions: FlowActions }) {
+  const open = data.maintenanceRequests.filter((request) => !['Completed', 'Closed', 'Rejected', 'Resident Notified'].includes(request.status));
+  const completed = data.maintenanceRequests.filter((request) => ['Completed', 'Closed', 'Resident Notified'].includes(request.status));
   return (
     <div className="mx-auto max-w-5xl space-y-6">
-      <SectionHeader eyebrow="My Requests" title="Track reported issues" action={<button className="btn-primary" onClick={() => actions.openForm('reportIssue')}><Plus size={17} /> Report issue</button>} />
-      <MaintenanceCards requests={data.maintenanceRequests} />
+      <SectionHeader eyebrow="Requests" title="Report and track building issues" action={<button className="btn-primary" onClick={() => actions.openForm('reportIssue')}><Plus size={17} /> New request</button>} />
+      <Panel title="Open requests">
+        <MaintenanceCards requests={open} contractors={data.contractors} />
+      </Panel>
+      {completed.length > 0 && (
+        <Panel title="Completed">
+          <MaintenanceCards requests={completed} contractors={data.contractors} compact />
+        </Panel>
+      )}
     </div>
   );
 }
 
 function MessagesPage({ role, data, actions }: { role: Role; data: MvpData; actions: FlowActions }) {
-  const records = role === 'contractor'
-    ? contractorMessageRecords(data.maintenanceRequests)
-    : data.messages;
   const accountName = testAccounts.find((account) => account.role === role)?.name ?? '';
+  const conversations = buildConversations(data.messages, data.participants, accountName);
+  const availableParticipants = dedupeParticipants(data.participants).filter((participant) => {
+    if (role === 'manager' || role === 'portfolio_admin') return ['resident', 'committee', 'contractor'].includes(participant.role);
+    if (role === 'resident' || role === 'committee' || role === 'contractor') return participant.role === 'manager';
+    return true;
+  });
+  const [activeParticipantId, setActiveParticipantId] = useState(conversations[0]?.participant.id ?? availableParticipants[0]?.id ?? '');
+  const [search, setSearch] = useState('');
+  const [draft, setDraft] = useState('');
+  const activeConversation = conversations.find((conversation) => conversation.participant.id === activeParticipantId);
+  const activeParticipant = activeConversation?.participant ?? availableParticipants.find((participant) => participant.id === activeParticipantId);
+  const filteredConversations = conversations.filter((conversation) => `${conversation.participant.name} ${conversation.participant.unit ?? ''} ${conversation.participant.detail ?? ''}`.toLowerCase().includes(search.toLowerCase()));
+  const relatedRequests = activeParticipant
+    ? data.maintenanceRequests.filter((request) => request.resident === activeParticipant.name || request.contractorId === activeParticipant.id)
+    : [];
+
+  useEffect(() => {
+    if (!activeParticipantId && (conversations[0]?.participant.id || availableParticipants[0]?.id)) {
+      setActiveParticipantId(conversations[0]?.participant.id ?? availableParticipants[0]?.id ?? '');
+    }
+  }, [activeParticipantId, conversations, availableParticipants]);
+
+  async function sendThreadMessage() {
+    if (!activeParticipant || !draft.trim()) return;
+    await actions.sendMessage({
+      recipientId: activeParticipant.id,
+      title: activeConversation?.messages[0]?.title ?? `Conversation with ${activeParticipant.name}`,
+      meta: draft.trim()
+    });
+    setDraft('');
+  }
+
   return (
-    <div className="mx-auto max-w-5xl space-y-6">
-      <SectionHeader eyebrow="Messages" title={role === 'manager' ? 'Resident conversation' : 'Message your strata manager'} action={(role === 'resident' || role === 'committee' || role === 'manager') ? <button className="btn-primary" onClick={() => actions.openForm('sendMessage')}><MessageSquare size={17} /> {role === 'manager' ? 'Reply' : 'Send message'}</button> : undefined} />
-      <Panel title="Conversation history">
-        <MessageThread records={records} accountName={accountName} />
-      </Panel>
+    <div className="space-y-5">
+      <SectionHeader eyebrow="Messages" title={role === 'manager' ? 'Inbox' : 'Conversations'} />
+      <div className="grid min-h-[680px] overflow-hidden rounded-3xl border border-line bg-white shadow-soft lg:grid-cols-[310px_minmax(0,1fr)_300px]">
+        <aside className="border-b border-line lg:border-b-0 lg:border-r">
+          <div className="border-b border-line p-4">
+            <label className="flex items-center gap-2 rounded-xl bg-slate-50 px-3 py-2">
+              <Search size={16} className="text-slate-400" />
+              <input className="w-full bg-transparent text-sm outline-none" placeholder="Search conversations" value={search} onChange={(event) => setSearch(event.target.value)} />
+            </label>
+            {(role === 'manager' || role === 'portfolio_admin') && (
+              <select className="mt-3 w-full rounded-xl border border-line px-3 py-2 text-sm" value={activeParticipantId} onChange={(event) => setActiveParticipantId(event.target.value)}>
+                <option value="">Start a conversation</option>
+                {availableParticipants.map((participant) => <option key={participant.id} value={participant.id}>{participant.name} · {roleLabels[participant.role]}</option>)}
+              </select>
+            )}
+          </div>
+          <div className="max-h-[590px] overflow-y-auto">
+            {filteredConversations.length ? filteredConversations.map((conversation) => (
+              <button className={`w-full border-b border-line p-4 text-left ${activeParticipantId === conversation.participant.id ? 'bg-blue-50' : 'hover:bg-slate-50'}`} key={conversation.participant.id} onClick={() => setActiveParticipantId(conversation.participant.id)}>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="truncate font-semibold">{conversation.participant.name}</p>
+                    <p className="mt-1 text-xs text-slate-500">{conversation.participant.unit ? `Lot ${conversation.participant.unit} · ` : ''}{roleLabels[conversation.participant.role]}</p>
+                  </div>
+                  {conversation.unread > 0 && <span className="grid h-6 min-w-6 place-items-center rounded-full bg-primary px-1.5 text-xs font-semibold text-white">{conversation.unread}</span>}
+                </div>
+                <p className="mt-2 truncate text-sm text-slate-500">{conversation.lastMessage.meta}</p>
+                <p className="mt-2 text-xs text-slate-400">{formatDateTime(conversation.lastMessage.due)}</p>
+              </button>
+            )) : <p className="p-5 text-sm text-slate-500">No conversations yet.</p>}
+          </div>
+        </aside>
+
+        <section className="flex min-h-[520px] flex-col">
+          {activeParticipant ? (
+            <>
+              <div className="border-b border-line px-5 py-4">
+                <h2 className="font-semibold">{activeParticipant.name}</h2>
+                <p className="mt-1 text-sm text-slate-500">{buildingName(activeParticipant.buildingId)} · {activeParticipant.unit ? `Lot ${activeParticipant.unit} · ` : ''}{roleLabels[activeParticipant.role]}</p>
+              </div>
+              <div className="flex-1 overflow-y-auto p-5">
+                <MessageThread records={activeConversation?.messages ?? []} accountName={accountName} />
+              </div>
+              <div className="border-t border-line p-4">
+                <textarea className="min-h-24 w-full resize-none rounded-2xl border border-line px-4 py-3 text-sm outline-none focus:border-harbour" placeholder={`Message ${activeParticipant.name}`} value={draft} onChange={(event) => setDraft(event.target.value)} />
+                <div className="mt-3 flex justify-end">
+                  <button className="btn-primary" disabled={!draft.trim()} onClick={() => void sendThreadMessage()}><MessageSquare size={16} /> Send</button>
+                </div>
+              </div>
+            </>
+          ) : <EmptyState title="Select a conversation" copy="Choose someone from the inbox to view their message history." />}
+        </section>
+
+        <aside className="border-t border-line p-5 lg:border-l lg:border-t-0">
+          {activeParticipant ? (
+            <div className="space-y-6">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Contact</p>
+                <h3 className="mt-2 font-semibold">{activeParticipant.name}</h3>
+                <p className="mt-1 text-sm text-slate-500">{activeParticipant.email}</p>
+                {activeParticipant.phone && <p className="mt-1 text-sm text-slate-500">{activeParticipant.phone}</p>}
+                {activeParticipant.detail && <p className="mt-2 text-sm text-slate-600">{activeParticipant.detail}</p>}
+              </div>
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Building context</p>
+                <p className="mt-2 text-sm font-medium">{buildingName(activeParticipant.buildingId)}</p>
+                {activeParticipant.unit && <p className="mt-1 text-sm text-slate-500">Lot {activeParticipant.unit}</p>}
+              </div>
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Related requests</p>
+                <div className="mt-2 space-y-2">
+                  {relatedRequests.length ? relatedRequests.slice(0, 4).map((request) => (
+                    <div className="rounded-xl bg-slate-50 p-3" key={request.id}>
+                      <p className="text-sm font-semibold">{request.title}</p>
+                      <p className="mt-1 text-xs text-slate-500">{request.status}</p>
+                    </div>
+                  )) : <p className="text-sm text-slate-500">No related requests.</p>}
+                </div>
+              </div>
+            </div>
+          ) : null}
+        </aside>
+      </div>
     </div>
   );
 }
@@ -1551,6 +1708,31 @@ function MessageThread({ records, accountName }: { records: SimpleRecord[]; acco
       })}
     </div>
   );
+}
+
+function dedupeParticipants(participants: ConversationParticipant[]) {
+  return [...new Map(participants.map((participant) => [`${participant.role}:${participant.name.toLowerCase()}`, participant])).values()];
+}
+
+function buildConversations(messages: SimpleRecord[], participants: ConversationParticipant[], accountName: string) {
+  const participantMap = new Map(dedupeParticipants(participants).map((participant) => [participant.id, participant]));
+  const grouped = new Map<string, SimpleRecord[]>();
+  messages.forEach((message) => {
+    const counterpartId = message.owner === accountName ? message.recipientId : message.senderId;
+    if (!counterpartId) return;
+    grouped.set(counterpartId, [...(grouped.get(counterpartId) ?? []), message]);
+  });
+  return [...grouped.entries()].flatMap(([participantId, records]) => {
+    const participant = participantMap.get(participantId);
+    if (!participant) return [];
+    const sorted = [...records].sort((a, b) => recordTime(a.due) - recordTime(b.due));
+    return [{
+      participant,
+      messages: sorted,
+      lastMessage: sorted[sorted.length - 1],
+      unread: records.filter((message) => message.status === 'Unread').length
+    }];
+  }).sort((a, b) => recordTime(b.lastMessage.due) - recordTime(a.lastMessage.due));
 }
 
 function DocumentList({ records }: { records: SimpleRecord[] }) {
@@ -1619,87 +1801,156 @@ function MaintenancePage({ role, data, actions }: { role: Role; data: MvpData; a
   );
 }
 
-function FacilitiesPage({ role, data, actions, buildingConfig }: { role: Role; data: MvpData; actions: FlowActions; buildingConfig: BuildingConfiguration }) {
+function FacilitiesPage({ role, data, actions, buildingConfig, onNavigate }: { role: Role; data: MvpData; actions: FlowActions; buildingConfig: BuildingConfiguration; onNavigate: (page: PageId) => void }) {
   const records = data.facilityBookings;
   const facilities = activeFacilities(buildingConfig);
   const residentCanBook = facilities.length > 0;
+  const [selectedFacility, setSelectedFacility] = useState(facilities[0]?.name ?? '');
+  const [calendarStart, setCalendarStart] = useState(startOfDay(new Date()));
+  const calendarDays = Array.from({ length: 14 }, (_, index) => new Date(calendarStart.getTime() + index * 86400000));
+  const managerView = role === 'manager' || role === 'portfolio_admin' || role === 'super_admin';
   return (
     <div className="space-y-6">
       <SectionHeader
-        eyebrow="Facility Bookings"
-        title="Facility bookings"
-        action={role === 'resident' && residentCanBook ? <button className="btn-primary" onClick={() => actions.openForm('bookFacility')}><Plus size={17} /> Request booking</button> : undefined}
+        eyebrow="Facilities"
+        title={managerView ? 'Booking calendar' : 'Book a building facility'}
+        action={managerView
+          ? <div className="flex flex-wrap gap-2"><button className="btn-secondary" onClick={() => onNavigate('building_settings')}>Manage facilities</button><button className="btn-primary" onClick={() => actions.openForm('blockFacility')}><CalendarDays size={17} /> Block time</button></div>
+          : residentCanBook ? <button className="btn-primary" onClick={() => actions.openForm('bookFacility')}><Plus size={17} /> New booking</button> : undefined}
       />
-      {role === 'resident' && (
+      {(role === 'resident' || role === 'committee') && (
         facilities.length ? (
-          <div className="grid gap-4 lg:grid-cols-2">
-            {facilities.map((facility) => (
-              <article className="rounded-3xl border border-line bg-white p-5 shadow-soft" key={facility.id}>
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div>
-                    <h2 className="text-lg font-semibold">{facility.name}</h2>
-                    <p className="mt-1 text-sm text-slate-500">{facility.location} · Capacity {facility.capacity}</p>
+          <>
+            <div className="grid gap-4 lg:grid-cols-3">
+              {facilities.map((facility) => (
+                <button className={`rounded-3xl border p-5 text-left shadow-soft transition ${selectedFacility === facility.name ? 'border-harbour bg-blue-50' : 'border-line bg-white hover:border-slate-300'}`} key={facility.id} onClick={() => setSelectedFacility(facility.name)}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <h2 className="text-lg font-semibold">{facility.name}</h2>
+                      <p className="mt-1 text-sm text-slate-500">{facility.location} · Up to {facility.capacity} guests</p>
+                    </div>
+                    <Badge label={facility.approvalRequired ? 'Approval required' : 'Instant'} />
                   </div>
-                  <Badge label={facility.approvalRequired ? 'Approval required' : 'Instant'} />
-                </div>
-                <p className="mt-3 text-sm leading-6 text-slate-600">{facility.description}</p>
-                <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                  <MiniStat label="Availability" value={facility.availability} />
-                  <MiniStat label="Max length" value={facility.maxBookingLength} />
-                  <MiniStat label="Notice" value={facility.advanceNotice} />
-                  <MiniStat label="Rules" value={facility.rules} />
-                </div>
-              </article>
-            ))}
-          </div>
+                  <p className="mt-3 text-sm leading-6 text-slate-600">{facility.description}</p>
+                  <p className="mt-4 text-xs font-semibold uppercase tracking-wide text-slate-400">{facility.availability}</p>
+                </button>
+              ))}
+            </div>
+            <Panel title={`${selectedFacility || 'Facility'} availability`} action={<button className="btn-primary" onClick={() => actions.openForm('bookFacility', { title: selectedFacility })}>Choose date and time</button>}>
+              <FacilityCalendar days={calendarDays} bookings={records.filter((booking) => booking.title === selectedFacility)} />
+            </Panel>
+          </>
         ) : (
           <EmptyState title="No facilities available for booking" copy="This building has no active resident-bookable facilities configured." />
         )
       )}
-      {role === 'resident' && (
+      {(role === 'resident' || role === 'committee') && (
         <Panel title="My bookings">
-          {records.length ? (
+          {records.filter((booking) => booking.status !== 'Blocked').length ? (
             <div className="divide-y divide-line">
-              {records.map((booking) => (
-                <div className="flex items-center justify-between gap-4 py-4" key={booking.id}>
+              {records.filter((booking) => booking.status !== 'Blocked').map((booking) => (
+                <div className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center sm:justify-between" key={booking.id}>
                   <div>
                     <p className="font-semibold">{booking.title}</p>
-                    <p className="mt-1 text-sm text-slate-500">{formatDate(booking.due)}</p>
+                    <p className="mt-1 text-sm text-slate-500">{formatBookingRange(booking)}</p>
                     {booking.meta && <p className="mt-1 text-sm text-slate-600">{booking.meta}</p>}
                   </div>
-                  <Badge label={booking.status} />
+                  <div className="flex items-center gap-2">
+                    <Badge label={booking.status} />
+                    {!['Cancelled', 'Rejected'].includes(booking.status) && <button className="btn-secondary" onClick={() => actions.updateFacilityBooking(booking.id, 'Cancelled')}>Cancel</button>}
+                  </div>
                 </div>
               ))}
             </div>
           ) : <ResidentEmpty copy="You have no facility bookings." action="Request a booking" onClick={() => actions.openForm('bookFacility')} />}
         </Panel>
       )}
-      {(role === 'manager' || role === 'portfolio_admin' || role === 'super_admin') && (
-        <Panel title="Booking requests">
-          <div className="divide-y divide-line">
-            {records.length ? records.map((booking) => (
-              <article className="flex flex-col gap-4 py-4 sm:flex-row sm:items-center sm:justify-between" key={booking.id}>
-                <div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h3 className="font-semibold">{booking.title}</h3>
-                    <Badge label={booking.status} />
+      {managerView && (
+        <>
+          <Panel title="Building calendar" action={<div className="flex gap-2"><button className="btn-secondary" onClick={() => setCalendarStart(new Date(calendarStart.getTime() - 7 * 86400000))}>Previous</button><button className="btn-secondary" onClick={() => setCalendarStart(new Date(calendarStart.getTime() + 7 * 86400000))}>Next</button></div>}>
+            <FacilityCalendar days={calendarDays} bookings={records} manager />
+          </Panel>
+          <Panel title="Booking requests">
+            <div className="divide-y divide-line">
+              {records.filter((booking) => booking.status !== 'Blocked').length ? records.filter((booking) => booking.status !== 'Blocked').map((booking) => (
+                <article className="flex flex-col gap-4 py-4 sm:flex-row sm:items-center sm:justify-between" key={booking.id}>
+                  <div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="font-semibold">{booking.title}</h3>
+                      <Badge label={booking.status} />
+                    </div>
+                    <p className="mt-1 text-sm text-slate-500">{booking.owner} · {formatBookingRange(booking)}</p>
+                    <p className="mt-2 text-sm text-slate-600">{booking.meta}</p>
                   </div>
-                  <p className="mt-1 text-sm text-slate-500">{booking.owner} · {formatDate(booking.due)}</p>
-                  <p className="mt-2 text-sm text-slate-600">{booking.meta}</p>
-                </div>
-                {['Submitted', 'Pending', 'Requested'].includes(booking.status) && (
                   <div className="flex shrink-0 flex-wrap gap-2">
-                    <button className="btn-secondary" onClick={() => actions.updateFacilityBooking(booking.id, 'Approved')}>Approve</button>
-                    <button className="btn-secondary" onClick={() => actions.updateFacilityBooking(booking.id, 'Rejected')}>Reject</button>
+                    {['Submitted', 'Pending', 'Requested'].includes(booking.status) && <button className="btn-primary" onClick={() => actions.updateFacilityBooking(booking.id, 'Approved')}>Approve</button>}
+                    {['Submitted', 'Pending', 'Requested'].includes(booking.status) && <button className="btn-secondary" onClick={() => actions.updateFacilityBooking(booking.id, 'Rejected')}>Reject</button>}
+                    {!['Cancelled', 'Rejected'].includes(booking.status) && <button className="btn-secondary" onClick={() => actions.updateFacilityBooking(booking.id, 'Cancelled')}>Cancel</button>}
                   </div>
-                )}
-              </article>
-            )) : <EmptyState title="No booking requests" copy="Resident BBQ Area requests will appear here for approval." />}
-          </div>
-        </Panel>
+                </article>
+              )) : <EmptyState title="No booking requests" copy="Resident facility requests will appear here for approval." />}
+            </div>
+          </Panel>
+        </>
       )}
     </div>
   );
+}
+
+function FacilityCalendar({ days, bookings, manager = false }: { days: Date[]; bookings: SimpleRecord[]; manager?: boolean }) {
+  return (
+    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-7">
+      {days.map((day) => {
+        const dayBookings = bookings.filter((booking) => booking.startsAt && sameDay(new Date(booking.startsAt), day));
+        return (
+          <div className="min-h-32 rounded-2xl border border-line bg-slate-50 p-3" key={day.toISOString()}>
+            <p className="text-xs font-semibold uppercase text-slate-400">{day.toLocaleDateString('en-AU', { weekday: 'short' })}</p>
+            <p className="mt-1 font-semibold">{day.toLocaleDateString('en-AU', { day: 'numeric', month: 'short' })}</p>
+            <div className="mt-3 space-y-2">
+              {dayBookings.length ? dayBookings.map((booking) => (
+                <div className={`rounded-lg px-2 py-2 text-xs ${booking.status === 'Blocked' ? 'bg-slate-200 text-slate-700' : 'bg-white text-slate-700 ring-1 ring-line'}`} key={booking.id}>
+                  <p className="font-semibold">{booking.title}</p>
+                  <p className="mt-1">{booking.startsAt ? new Date(booking.startsAt).toLocaleTimeString('en-AU', { hour: 'numeric', minute: '2-digit' }) : ''}</p>
+                  {manager && <p className="mt-1 text-slate-500">{booking.status === 'Blocked' ? 'Blocked' : booking.owner}</p>}
+                  {manager && hasBookingConflict(booking, bookings) && <p className="mt-1 font-semibold text-red-700">Conflict</p>}
+                </div>
+              )) : <p className="text-xs text-slate-400">Available</p>}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function startOfDay(date: Date) {
+  const result = new Date(date);
+  result.setHours(0, 0, 0, 0);
+  return result;
+}
+
+function sameDay(first: Date, second: Date) {
+  return first.getFullYear() === second.getFullYear() && first.getMonth() === second.getMonth() && first.getDate() === second.getDate();
+}
+
+function formatBookingRange(booking: SimpleRecord) {
+  if (!booking.startsAt) return formatDate(booking.due);
+  const start = new Date(booking.startsAt);
+  const end = booking.endsAt ? new Date(booking.endsAt) : null;
+  const date = start.toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' });
+  const startTime = start.toLocaleTimeString('en-AU', { hour: 'numeric', minute: '2-digit' });
+  const endTime = end?.toLocaleTimeString('en-AU', { hour: 'numeric', minute: '2-digit' });
+  return `${date} · ${startTime}${endTime ? `–${endTime}` : ''}`;
+}
+
+function hasBookingConflict(booking: SimpleRecord, bookings: SimpleRecord[]) {
+  if (!booking.startsAt || !booking.endsAt || ['Rejected', 'Cancelled'].includes(booking.status)) return false;
+  const start = new Date(booking.startsAt).getTime();
+  const end = new Date(booking.endsAt).getTime();
+  return bookings.some((other) => {
+    if (other.id === booking.id || other.title !== booking.title || !other.startsAt || !other.endsAt || ['Rejected', 'Cancelled'].includes(other.status)) return false;
+    return new Date(other.startsAt).getTime() < end && new Date(other.endsAt).getTime() > start;
+  });
 }
 
 function RenovationsPage({ role, data, actions, buildingConfig }: { role: Role; data: MvpData; actions: FlowActions; buildingConfig: BuildingConfiguration }) {
@@ -1812,7 +2063,7 @@ type ActiveSettingForm = {
 
 function BuildingSettingsPage({ buildingConfig, actions }: { buildingConfig: BuildingConfiguration; actions: FlowActions }) {
   const tabs = ['Profile', 'Facilities', 'Contacts / Directory', 'Issue Categories', 'Renovation Rules', 'Package Management', 'Compliance Items', 'Assets', 'Resident Permissions', 'Notification Rules'] as const;
-  const [activeTab, setActiveTab] = useState<typeof tabs[number]>('Profile');
+  const [activeTab, setActiveTab] = useState<typeof tabs[number]>('Facilities');
   const [activeSettingForm, setActiveSettingForm] = useState<ActiveSettingForm | null>(null);
 
   async function saveConfig(nextConfig: BuildingConfiguration, action: string) {
@@ -2227,7 +2478,7 @@ function SettingsEditModal({
                   {field.options.map((option) => <option key={option} value={option}>{option}</option>)}
                 </select>
               ) : (
-                <input className="mt-2 w-full rounded-2xl border border-line px-4 py-3 outline-none focus:border-harbour" value={formValues[field.name] ?? ''} onChange={(event) => updateValue(field.name, event.target.value)} required={field.required} />
+                <input className="mt-2 w-full rounded-2xl border border-line px-4 py-3 outline-none focus:border-harbour" type={field.type ?? 'text'} value={formValues[field.name] ?? ''} onChange={(event) => updateValue(field.name, event.target.value)} required={field.required} />
               )}
             </label>
           ))}
@@ -2566,7 +2817,7 @@ function WorkflowModal({
 type FormField = {
   name: string;
   label: string;
-  type?: 'text' | 'textarea' | 'file';
+  type?: 'text' | 'textarea' | 'file' | 'date' | 'time' | 'number';
   required?: boolean;
   options?: string[];
 };
@@ -2665,13 +2916,29 @@ function formConfig(kind: FormKind, role: Role, context: FormContext | undefined
     },
     bookFacility: {
       title: 'Book facility',
-      copy: 'Request a time for a shared facility. The manager will approve or decline it.',
+      copy: 'Choose a date and time. Atlas checks existing bookings before submitting your request.',
       submitLabel: 'Request booking',
-      defaults: { title: facilityOptions[0] ?? 'Facility booking', date: '2026-06-18', notes: '' },
+      defaults: { title: context?.title ?? facilityOptions[0] ?? 'Facility booking', date: nextDateValue(), startTime: '10:00', duration: '2', guests: '2', notes: '' },
       fields: [
         { name: 'title', label: 'Facility', options: facilityOptions.length ? facilityOptions : ['No active facilities configured'], required: true },
-        { name: 'date', label: 'Requested date', required: true },
+        { name: 'date', label: 'Requested date', type: 'date', required: true },
+        { name: 'startTime', label: 'Start time', type: 'time', required: true },
+        { name: 'duration', label: 'Duration (hours)', options: ['1', '2', '3', '4'], required: true },
+        { name: 'guests', label: 'Number of guests', type: 'number', required: true },
         { name: 'notes', label: 'Notes', type: 'textarea' }
+      ]
+    },
+    blockFacility: {
+      title: 'Block facility time',
+      copy: 'Make a facility unavailable for maintenance, private works or building operations.',
+      submitLabel: 'Block time',
+      defaults: { title: facilityOptions[0] ?? 'Facility', date: nextDateValue(), startTime: '09:00', duration: '2', notes: '' },
+      fields: [
+        { name: 'title', label: 'Facility', options: facilityOptions.length ? facilityOptions : ['No active facilities configured'], required: true },
+        { name: 'date', label: 'Date', type: 'date', required: true },
+        { name: 'startTime', label: 'Start time', type: 'time', required: true },
+        { name: 'duration', label: 'Duration (hours)', options: ['1', '2', '3', '4', '8'], required: true },
+        { name: 'notes', label: 'Reason', type: 'textarea' }
       ]
     },
     submitRenovation: {
@@ -2856,7 +3123,9 @@ function MaintenanceCards({
       {requests.map((request) => {
         const nextStep = contractorView
           ? contractorNextStep(request, onContractorUpdate)
-          : managerMaintenanceNextStep(request, onAssignContractor, onStatusUpdate);
+          : onAssignContractor || onStatusUpdate
+            ? managerMaintenanceNextStep(request, onAssignContractor, onStatusUpdate)
+            : residentMaintenanceStep(request);
         const assignedContractor = contractorRoster?.find((contractor) => contractor.id === request.contractorId);
         return (
           <article className="rounded-3xl border border-line bg-white p-5 shadow-soft" key={request.id}>
@@ -3015,6 +3284,17 @@ function contractorNextStep(request: MaintenanceRequest, onContractorUpdate?: (i
     copy: 'This request is not ready for contractor action yet.',
     label: 'Waiting'
   };
+}
+
+function residentMaintenanceStep(request: MaintenanceRequest): MaintenanceNextStep {
+  const status = normalizedMaintenanceStatus(request);
+  if (status === 'New Request') return { title: 'Received by strata', copy: 'Your request has been sent to the strata manager for review.', label: 'Submitted' };
+  if (status === 'Assigned') return { title: 'Contractor assigned', copy: 'A contractor has been assigned. Atlas will show their next update here.', label: 'Assigned' };
+  if (status === 'Accepted') return { title: 'Contractor accepted', copy: 'The contractor has acknowledged the job and is preparing to attend.', label: 'Accepted' };
+  if (status === 'In Progress') return { title: 'Work in progress', copy: 'The contractor has started work. Progress updates will appear in the timeline.', label: 'In Progress' };
+  if (status === 'Complete') return { title: 'Work completed', copy: 'The contractor has completed the work. The strata manager is reviewing the close-out.', label: 'Complete' };
+  if (status === 'Resident Notified' || status === 'Closed') return { title: 'Request closed', copy: 'The work is complete and the request has been closed.', label: 'Closed' };
+  return { title: request.status, copy: 'Your strata manager is actively managing this request.', label: request.status };
 }
 
 function MaintenanceWorkflowSummary({ requests }: { requests: MaintenanceRequest[] }) {
@@ -3238,6 +3518,11 @@ function defaultMaintenanceNote(status?: string) {
   if (status === 'Complete') return 'Contractor marked the work complete.';
   if (status === 'Resident Notified') return 'Resident notified that the request has been completed.';
   return '';
+}
+
+function nextDateValue() {
+  const date = new Date(Date.now() + 24 * 60 * 60 * 1000);
+  return date.toISOString().slice(0, 10);
 }
 
 function visibleContacts(config: BuildingConfiguration, role: Role) {

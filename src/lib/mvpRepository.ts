@@ -1,6 +1,6 @@
 import { supabase, isSupabaseConfigured, supabaseEnvStatus } from './supabase';
 import { auditLogs, buildingConfigurations, company, contractors, incidents, packages, testAccounts } from '../data';
-import type { Building, BuildingConfiguration, Contractor, MaintenanceRequest, Notice, Priority, ReportIssue, Role, SimpleRecord, TestAccount } from '../data';
+import type { Building, BuildingConfiguration, Contractor, ConversationParticipant, MaintenanceRequest, Notice, Priority, ReportIssue, Role, SimpleRecord, TestAccount } from '../data';
 
 const SANDBOX_BUILDING_ID = '00000000-0000-4000-8000-000000000101';
 const DOCUMENTS_BUCKET = 'atlas-documents';
@@ -11,6 +11,7 @@ export type MvpData = {
   reportIssues: ReportIssue[];
   maintenanceRequests: MaintenanceRequest[];
   contractors: Contractor[];
+  participants: ConversationParticipant[];
   contractorUpdates: SimpleRecord[];
   messages: SimpleRecord[];
   documents: SimpleRecord[];
@@ -34,6 +35,7 @@ const emptyData: MvpData = {
   reportIssues: [],
   maintenanceRequests: [],
   contractors,
+  participants: [],
   contractorUpdates: [],
   messages: [],
   documents: [],
@@ -116,6 +118,10 @@ export async function loadMvpData(account: TestAccount | null, role: Role): Prom
     issueRows,
     maintenanceRows,
     contractorRows,
+    userRows,
+    roleRows,
+    membershipRows,
+    lotRows,
     workOrderRows,
     messageRows,
     documentRows,
@@ -133,10 +139,14 @@ export async function loadMvpData(account: TestAccount | null, role: Role): Prom
     supabase.from('report_issues').select('*, lots(unit_number), users(full_name)').in('building_id', buildingFilter).order('created_at', { ascending: false }),
     supabase.from('maintenance_requests').select('*, lots(unit_number), users(full_name)').in('building_id', buildingFilter).order('created_at', { ascending: false }),
     supabase.from('contractors').select('*').eq('company_id', companyId).order('created_at', { ascending: false }),
+    supabase.from('users').select('id, full_name, email, phone').eq('company_id', companyId),
+    supabase.from('user_roles').select('user_id, role').eq('company_id', companyId),
+    supabase.from('building_memberships').select('user_id, building_id, lot_id, role').in('building_id', buildingFilter),
+    supabase.from('lots').select('id, unit_number, building_id').in('building_id', buildingFilter),
     supabase.from('work_orders').select('*').in('building_id', buildingFilter).order('created_at', { ascending: false }),
     hasBuildingScope
-      ? supabase.from('messages').select('*, sender:users!messages_sender_id_fkey(full_name), recipient:users!messages_recipient_id_fkey(full_name)').or(`building_id.in.(${allowedBuildingIds.join(',')}),recipient_id.eq.${user.id},sender_id.eq.${user.id}`).order('created_at', { ascending: false })
-      : supabase.from('messages').select('*, sender:users!messages_sender_id_fkey(full_name), recipient:users!messages_recipient_id_fkey(full_name)').or(`recipient_id.eq.${user.id},sender_id.eq.${user.id}`).order('created_at', { ascending: false }),
+      ? supabase.from('messages').select('*, sender:users!messages_sender_id_fkey(full_name,email), recipient:users!messages_recipient_id_fkey(full_name,email)').or(`building_id.in.(${allowedBuildingIds.join(',')}),recipient_id.eq.${user.id},sender_id.eq.${user.id}`).order('created_at', { ascending: false })
+      : supabase.from('messages').select('*, sender:users!messages_sender_id_fkey(full_name,email), recipient:users!messages_recipient_id_fkey(full_name,email)').or(`recipient_id.eq.${user.id},sender_id.eq.${user.id}`).order('created_at', { ascending: false }),
     supabase.from('documents').select('*, uploaded_by_user:users!documents_uploaded_by_fkey(full_name)').in('building_id', buildingFilter).order('created_at', { ascending: false }),
     supabase.from('notifications').select('*').eq('user_id', user.id).order('created_at', { ascending: false }),
     supabase.from('audit_logs').select('*').eq('company_id', companyId).order('created_at', { ascending: false }).limit(30),
@@ -152,6 +162,9 @@ export async function loadMvpData(account: TestAccount | null, role: Role): Prom
   const votes = voteRows.data ?? [];
   const contractorUpdates = jobUpdateRows.data ?? [];
   const workflowMessages = messageRows.data ?? [];
+  const memberships = membershipRows.data ?? [];
+  const lots = lotRows.data ?? [];
+  const userRoles = roleRows.data ?? [];
   const noticeData = (noticeRows.data ?? []).filter((notice) => {
     if (role === 'resident' || role === 'committee') return notice.publication_status !== 'Draft';
     return true;
@@ -164,6 +177,32 @@ export async function loadMvpData(account: TestAccount | null, role: Role): Prom
     notices: noticeData.map(mapNotice),
     reportIssues: (issueRows.data ?? []).map(mapIssue),
     contractors: (contractorRows.data ?? []).map(mapContractor),
+    participants: [
+      ...(userRows.data ?? []).flatMap((participant) => {
+        const membership = memberships.find((item) => item.user_id === participant.id);
+        const participantRole = userRoles.find((item) => item.user_id === participant.id)?.role as Role | undefined;
+        if (!membership || !participantRole || participant.id === user.id || participantRole === 'super_admin' || participantRole === 'portfolio_admin') return [];
+        return [{
+          id: participant.id,
+          name: participant.full_name,
+          email: participant.email,
+          phone: participant.phone,
+          role: participantRole,
+          buildingId: localBuildingId(membership.building_id),
+          unit: lots.find((lot) => lot.id === membership.lot_id)?.unit_number,
+          detail: participantRole === 'manager' ? 'Strata manager' : undefined
+        }];
+      }),
+      ...(contractorRows.data ?? []).map((contractor) => ({
+        id: (userRows.data ?? []).find((participant) => participant.email === contractor.email || participant.full_name === contractor.contact_person)?.id ?? contractor.id,
+        name: contractor.contact_person,
+        email: contractor.email,
+        phone: contractor.phone,
+        role: 'contractor' as Role,
+        buildingId: localBuildingId(buildingFilter[0]),
+        detail: `${contractor.company_name} · ${contractor.trade_category}`
+      }))
+    ],
     maintenanceRequests: (maintenanceRows.data ?? []).map((row) => {
       const workOrder = workOrders.find((item) => item.maintenance_request_id === row.id);
       return mapMaintenance(
@@ -203,6 +242,7 @@ async function loadContractorMvpData(account: TestAccount, userId: string): Prom
   return {
     ...emptyData,
     contractors,
+    participants: [],
     maintenanceRequests: (workOrders.data ?? []).map((row) => mapMaintenance({
       ...(row.maintenance_requests ?? {}),
       contractor_id: row.contractor_id,
@@ -640,8 +680,13 @@ export async function sendResidentMessage(account: TestAccount | null, payload?:
   const context = await requireUserContext(account);
   if (!context.ok) return context;
   const { user, membership } = context;
-  const recipientEmail = account?.role === 'manager' ? 'resident@example.com' : 'manager@northshorestrata.com.au';
-  const recipient = await findUserByEmail(recipientEmail);
+  const requestedRecipient = payload?.recipientId
+    ? await supabase!.from('users').select('*').eq('id', payload.recipientId).maybeSingle()
+    : { data: null };
+  const recipientEmail = account?.role === 'manager' || account?.role === 'portfolio_admin'
+    ? 'resident@example.com'
+    : 'manager@northshorestrata.com.au';
+  const recipient = requestedRecipient.data ?? await findUserByEmail(recipientEmail);
   if (!recipient) return { ok: false, message: 'Message recipient profile not found.' };
   const recipientMembership = account?.role === 'manager' ? await firstMembership(recipient.id) : null;
   const messageCompanyId = recipientMembership?.company_id ?? membership.company_id;
@@ -705,8 +750,18 @@ export async function bookFacility(account: TestAccount | null, payload?: Partia
   const context = await requireUserContext(account);
   if (!context.ok) return context;
   const { user, membership } = context;
-  const startsAt = payload?.due ? new Date(`${payload.due}T09:00:00`).toISOString() : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
-  const endsAt = payload?.due ? new Date(`${payload.due}T11:00:00`).toISOString() : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000 + 2 * 60 * 60 * 1000).toISOString();
+  const startsAt = payload?.startsAt ?? (payload?.due ? new Date(`${payload.due}T09:00:00`).toISOString() : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString());
+  const endsAt = payload?.endsAt ?? (payload?.due ? new Date(`${payload.due}T11:00:00`).toISOString() : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000 + 2 * 60 * 60 * 1000).toISOString());
+  const conflict = await supabase!.from('facility_bookings')
+    .select('id')
+    .eq('building_id', membership.building_id)
+    .eq('facility', payload?.title ?? 'Facility')
+    .not('status', 'in', '("Rejected","Cancelled")')
+    .lt('starts_at', endsAt)
+    .gt('ends_at', startsAt)
+    .limit(1)
+    .maybeSingle();
+  if (conflict.data) return { ok: false, message: 'That time is no longer available. Choose another time.' };
   const booking = await supabase!.from('facility_bookings').insert({
     company_id: membership.company_id,
     building_id: membership.building_id,
@@ -715,12 +770,34 @@ export async function bookFacility(account: TestAccount | null, payload?: Partia
     starts_at: startsAt,
     ends_at: endsAt,
     status: 'Submitted',
-    deposit_placeholder: 150
+    deposit_placeholder: Number(payload?.amount ?? 0)
   }).select('id').single();
   if (booking.error) return { ok: false, message: booking.error.message };
   await notifyManager(membership.company_id, membership.building_id, 'facility_booking', 'Facility booking requested', payload?.title ?? 'Facility booking');
   await insertAudit(membership.company_id, membership.building_id, user.id, 'CREATE_FACILITY_BOOKING', 'facility_bookings', booking.data.id);
   return { ok: true, message: 'Facility booking saved in Supabase.' };
+}
+
+export async function blockFacilityTime(account: TestAccount | null, payload: Partial<SimpleRecord>): Promise<MvpActionResult> {
+  const context = await requireUserContext(account);
+  if (!context.ok) return context;
+  const { user, membership } = context;
+  const startsAt = payload.startsAt;
+  const endsAt = payload.endsAt;
+  if (!startsAt || !endsAt) return { ok: false, message: 'Block start and end times are required.' };
+  const block = await supabase!.from('facility_bookings').insert({
+    company_id: membership.company_id,
+    building_id: membership.building_id,
+    resident_id: null,
+    facility: payload.title ?? 'Facility',
+    starts_at: startsAt,
+    ends_at: endsAt,
+    status: 'Blocked',
+    deposit_placeholder: 0
+  }).select('id').single();
+  if (block.error) return { ok: false, message: block.error.message };
+  await insertAudit(membership.company_id, membership.building_id, user.id, 'BLOCK_FACILITY_TIME', 'facility_bookings', block.data.id);
+  return { ok: true, message: 'Facility time blocked.' };
 }
 
 export async function updateFacilityBooking(account: TestAccount | null, id: string, status: string): Promise<MvpActionResult> {
@@ -1043,6 +1120,8 @@ function mapMaintenance(row: any, workOrder?: any, jobUpdates: any[] = [], statu
 }
 
 function mapMessage(row: any, currentUserId: string): SimpleRecord {
+  const senderAccount = testAccounts.find((account) => account.email === row.sender?.email);
+  const recipientAccount = testAccounts.find((account) => account.email === row.recipient?.email);
   return {
     id: row.id,
     title: row.subject ?? row.body?.slice(0, 48) ?? 'Message',
@@ -1051,7 +1130,11 @@ function mapMessage(row: any, currentUserId: string): SimpleRecord {
     status: row.recipient_id === currentUserId && !row.read_at ? 'Unread' : 'Open',
     due: row.created_at,
     meta: row.body,
-    createdBy: row.recipient?.full_name ?? 'Building manager'
+    createdBy: row.recipient?.full_name ?? 'Building manager',
+    senderId: row.sender_id,
+    recipientId: row.recipient_id,
+    senderRole: senderAccount?.role,
+    recipientRole: recipientAccount?.role
   };
 }
 
@@ -1077,7 +1160,9 @@ function mapFacilityBooking(row: any): SimpleRecord {
     owner: row.resident?.full_name ?? 'Resident',
     status: row.status,
     due: row.starts_at,
-    meta: row.deposit_placeholder ? `Deposit required: $${row.deposit_placeholder}` : 'No fee'
+    meta: row.status === 'Blocked' ? 'Unavailable' : row.deposit_placeholder ? `Deposit required: $${row.deposit_placeholder}` : 'No fee',
+    startsAt: row.starts_at,
+    endsAt: row.ends_at
   };
 }
 

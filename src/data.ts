@@ -269,6 +269,25 @@ export type SimpleRecord = {
   amount?: number;
   href?: string;
   createdBy?: string;
+  senderId?: string;
+  recipientId?: string;
+  senderRole?: Role;
+  recipientRole?: Role;
+  unit?: string;
+  startsAt?: string;
+  endsAt?: string;
+  guests?: number;
+};
+
+export type ConversationParticipant = {
+  id: string;
+  name: string;
+  email: string;
+  phone?: string;
+  role: Role;
+  buildingId: string;
+  unit?: string;
+  detail?: string;
 };
 
 export type NavItem = {
@@ -371,7 +390,7 @@ export const rolePermissions: Record<Role, {
     canManage: ['own issues', 'own bookings', 'own messages']
   },
   committee: {
-    scope: 'Committee records for Harbourline Residences',
+    scope: 'Atlas Residences, Lot 1A + Committee',
     canSeeBuildings: 'own',
     canSeeFinancials: 'none',
     canManage: ['motions', 'votes', 'committee documents', 'quotes']
@@ -788,13 +807,17 @@ export const navItems: NavItem[] = [
   { id: 'resident', label: 'Dashboard', icon: Home, roles: ['resident'] },
   { id: 'messages', label: 'Messages', icon: MessageSquare, roles: ['resident'] },
   { id: 'communications', label: 'Notices', icon: Bell, roles: ['resident'] },
-  { id: 'report_issue', label: 'Report Issue', icon: AlertTriangle, roles: ['resident'] },
-  { id: 'my_requests', label: 'My Requests', icon: ClipboardCheck, roles: ['resident'] },
+  { id: 'my_requests', label: 'Requests', icon: ClipboardCheck, roles: ['resident'] },
   { id: 'documents', label: 'Documents', icon: FileText, roles: ['resident'] },
-  { id: 'facilities', label: 'Facility Bookings', icon: Landmark, roles: ['resident'] },
+  { id: 'facilities', label: 'Facilities', icon: Landmark, roles: ['resident'] },
 
-  { id: 'committee', label: 'Dashboard', icon: LayoutDashboard, roles: ['committee'] },
-  { id: 'motions', label: 'Motions & Voting', icon: Vote, roles: ['committee'] },
+  { id: 'resident', label: 'Dashboard', icon: Home, roles: ['committee'] },
+  { id: 'messages', label: 'Messages', icon: MessageSquare, roles: ['committee'] },
+  { id: 'communications', label: 'Notices', icon: Bell, roles: ['committee'] },
+  { id: 'my_requests', label: 'Requests', icon: ClipboardCheck, roles: ['committee'] },
+  { id: 'documents', label: 'Documents', icon: FileText, roles: ['committee'] },
+  { id: 'facilities', label: 'Facilities', icon: Landmark, roles: ['committee'] },
+  { id: 'committee', label: 'Committee', icon: Vote, roles: ['committee'] },
 
   { id: 'contractor', label: 'Dashboard', icon: LayoutDashboard, roles: ['contractor'] },
   { id: 'maintenance', label: 'Assigned Job', icon: Wrench, roles: ['contractor'] }
