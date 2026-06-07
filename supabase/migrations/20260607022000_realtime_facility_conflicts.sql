@@ -1,5 +1,23 @@
 create extension if not exists btree_gist;
 
+with duplicate_bookings as (
+  select
+    id,
+    row_number() over (
+      partition by building_id, facility, starts_at, ends_at
+      order by id desc
+    ) as duplicate_rank
+  from facility_bookings
+  where status not in ('Rejected', 'Cancelled')
+)
+update facility_bookings
+set status = 'Cancelled'
+where id in (
+  select id
+  from duplicate_bookings
+  where duplicate_rank > 1
+);
+
 do $$
 begin
   if not exists (
